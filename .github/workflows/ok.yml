@@ -28,5 +28,5 @@ jobs:
         run: uv sync
       - name: add-tools.sh
         run: ./add-tools.sh
-      - name: uv run
-        run: uv run load_data.py
+      # - name: uv run
+      #   run: uv run load_data.py
