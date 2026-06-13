@@ -7,6 +7,31 @@ st.set_page_config(page_title='fincalc', layout='wide', initial_sidebar_state=No
 
 st.write("welcome")
 
+import duckdb
+
+
+def forecast_by_city(city: str) -> duckdb.DuckDBPyRelation:
+    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
+    geo = duckdb.sql(f"""
+        SELECT results[1].latitude AS lat, results[1].longitude AS lon
+        FROM read_json('{geo_url}')
+    """).fetchone()
+    lat, lon = geo
+
+    fc_url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}&hourly=temperature_2m"
+    )
+    return duckdb.sql(f"""
+        SELECT
+            unnest(hourly.time)::TIMESTAMP AS time,
+            unnest(hourly.temperature_2m) AS temp_c
+        FROM read_json('{fc_url}')
+    """)
+
+# forecast_by_city("Montreal").show()
+
+
 interest = st.slider(
     label = 'interest',
     value = 1.02,
