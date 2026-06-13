@@ -7,7 +7,6 @@ st.set_page_config(page_title='fincalc', layout='wide', initial_sidebar_state=No
 
 st.write("welcome")
 
-import duckdb
 
 
 def forecast_by_city(city: str) -> duckdb.DuckDBPyRelation:
@@ -29,7 +28,6 @@ def forecast_by_city(city: str) -> duckdb.DuckDBPyRelation:
         FROM read_json('{fc_url}')
     """)
 
-# forecast_by_city("Montreal").show()
 
 
 interest = st.slider(
@@ -55,3 +53,11 @@ c1.dataframe(df, height = 'content')
 # st.data_editor(rel)
 
 c2.scatter_chart(df, size = 50, height = 600)
+
+
+
+
+dft = forecast_by_city("Montreal").df().set_index('time')
+
+st.scatter_chart(dft)
+
