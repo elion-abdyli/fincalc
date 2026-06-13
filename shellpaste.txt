@@ -1,0 +1,225 @@
+
+D 
+D 
+D 
+D COPY (
+    SELECT content FROM read_blob('https://www150.statcan.gc.ca/n1/tbl/csv/18100245-eng.zip')
+  ) TO 'sc.zip' (FORMAT blob);
+D 
+D 
+D 
+D .shell unzip -o sc.zip
+Archive:  sc.zip
+  inflating: 18100245.csv            
+  inflating: 18100245_MetaData.csv   
+D 
+D 
+D from '18100245.csv';
+┌──────────┬──────────────────────┬────────────────┬──────────────────────┬─────────┬───┬────────┬─────────┬─────────┬────────────┬──────────┐
+│ REF_DATE │         GEO          │     DGUID      │       Products       │   UOM   │ … │ VALUE  │ STATUS  │ SYMBOL  │ TERMINATED │ DECIMALS │
+│ varchar  │       varchar        │    varchar     │       varchar        │ varchar │   │ double │ varchar │ varchar │  varchar   │  int64   │
+├──────────┼──────────────────────┼────────────────┼──────────────────────┼─────────┼───┼────────┼─────────┼─────────┼────────────┼──────────┤
+│ 2017-01  │ Canada               │ 2021A000011124 │ Beef stewing cuts,…  │ Dollars │ … │  12.66 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Beef striploin cut…  │ Dollars │ … │  21.94 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Beef top sirloin c…  │ Dollars │ … │  13.44 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Beef rib cuts, per…  │ Dollars │ … │  20.17 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Ground beef, per k…  │ Dollars │ … │   9.12 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Pork loin cuts, pe…  │ Dollars │ … │   7.34 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Pork rib cuts, per…  │ Dollars │ … │   7.37 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Pork shoulder cuts…  │ Dollars │ … │   4.76 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Whole chicken, per…  │ Dollars │ … │   5.15 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Chicken breasts, p…  │ Dollars │ … │  11.38 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Chicken thigh, per…  │ Dollars │ … │   8.93 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Chicken drumsticks…  │ Dollars │ … │   5.99 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Bacon, 500 grams     │ Dollars │ … │   5.03 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Wieners, 400 grams   │ Dollars │ … │   3.12 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Salmon, per kilogram │ Dollars │ … │  24.83 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Shrimp, 300 grams    │ Dollars │ … │   6.59 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Canned salmon, 213…  │ Dollars │ … │   3.03 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Canned tuna, 170 g…  │ Dollars │ … │   1.44 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Meatless burgers, …  │ Dollars │ … │   4.19 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2017-01  │ Canada               │ 2021A000011124 │ Milk, 1 litre        │ Dollars │ … │   2.17 │ NULL    │ NULL    │ NULL       │        2 │
+│    ·     │   ·                  │       ·        │       ·              │    ·    │ · │     ·  │  ·      │  ·      │  ·         │        · │
+│    ·     │   ·                  │       ·        │       ·              │    ·    │ · │     ·  │  ·      │  ·      │  ·         │        · │
+│    ·     │   ·                  │       ·        │       ·              │    ·    │ · │     ·  │  ·      │  ·      │  ·         │        · │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Infant formula, 90…  │ Dollars │ … │  49.87 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Peanut butter, 1 k…  │ Dollars │ … │   6.81 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Mayonnaise, 890 mi…  │ Dollars │ … │   6.88 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned baked beans…  │ Dollars │ … │   2.26 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned tomatoes, 7…  │ Dollars │ … │   2.28 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned soup, 284 m…  │ Dollars │ … │   1.82 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned beans and l…  │ Dollars │ … │   1.84 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned corn, 341 m…  │ Dollars │ … │   1.85 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned peach, 398 …  │ Dollars │ … │   2.44 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Canned pear, 398 m…  │ Dollars │ … │   2.54 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Dried lentils, 900…  │ Dollars │ … │   3.76 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Dry beans and legu…  │ Dollars │ … │   3.61 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Pasta sauce, 650 m…  │ Dollars │ … │   4.25 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Almonds, 200 grams   │ Dollars │ … │   6.18 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Peanuts, 450 grams   │ Dollars │ … │   4.25 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Sunflower seeds, 4…  │ Dollars │ … │    5.8 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Deodorant, 85 grams  │ Dollars │ … │   9.07 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Toothpaste, 100 mi…  │ Dollars │ … │   4.71 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Shampoo, 400 milli…  │ Dollars │ … │   7.67 │ NULL    │ NULL    │ NULL       │        2 │
+│ 2026-04  │ Yellowknife, North…  │ 2021S05101044  │ Laundry detergent,…  │ Dollars │ … │  15.39 │ NULL    │ NULL    │ NULL       │        2 │
+├──────────┴──────────────────────┴────────────────┴──────────────────────┴─────────┴───┴────────┴─────────┴─────────┴────────────┴──────────┤
+│ 136200 rows (40 shown)                                                                                               15 columns (10 shown) │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+D from '18100245_MetaData.csv';
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ "Cube Title","Product Id","CANSIM Id",URL,"Cube Notes","Archive Status",Frequency,"Start Reference Period","End Reference Period","Total …  │
+│                                                                   varchar                                                                   │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ "Monthly average retail prices for selected products","18100245",,"https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1810024501",1;2;…  │
+│ NULL                                                                                                                                        │
+│ "Dimension ID","Dimension name","Dimension Notes","Dimension Definitions"                                                                   │
+│ "1","Geography",,""                                                                                                                         │
+│ "2","Products",,""                                                                                                                          │
+│ NULL                                                                                                                                        │
+│ "Dimension ID","Member Name","Classification Code","Member ID","Parent Member ID",Terminated,"Member Notes","Member Definitions"            │
+│ "1","Canada","[11124]","11","","",,                                                                                                         │
+│ "1","Newfoundland and Labrador","[10]","1","11","",,                                                                                        │
+│ "1","Prince Edward Island","[11]","2","11","",,                                                                                             │
+│ "1","Nova Scotia","[12]","3","11","",,                                                                                                      │
+│ "1","New Brunswick","[13]","4","11","",,                                                                                                    │
+│ "1","Quebec","[24]","5","11","",,                                                                                                           │
+│ "1","Ontario","[35]","6","11","",,                                                                                                          │
+│ "1","Manitoba","[46]","7","11","",,                                                                                                         │
+│ "1","Saskatchewan","[47]","8","11","",,                                                                                                     │
+│ "1","Alberta","[48]","9","11","",,                                                                                                          │
+│ "1","British Columbia","[59]","10","11","",,                                                                                                │
+│ "1","Whitehorse, Yukon","[1023]","12","11","",,                                                                                             │
+│ "1","Yellowknife, Northwest Territories","[1044]","13","11","",,                                                                            │
+│         ·                                                                                                                                   │
+│         ·                                                                                                                                   │
+│         ·                                                                                                                                   │
+│ "preliminary","p",                                                                                                                          │
+│ "revised","r",                                                                                                                              │
+│ "suppressed to meet the confidentiality requirements of the Statistics Act","x",                                                            │
+│ "terminated","t",                                                                                                                           │
+│ NULL                                                                                                                                        │
+│ "Survey Code","Survey Name"                                                                                                                 │
+│ "2301","Consumer Price Index"                                                                                                               │
+│ NULL                                                                                                                                        │
+│ "Subject Code","Subject Name"                                                                                                               │
+│ "18","Prices and price indexes"                                                                                                             │
+│ NULL                                                                                                                                        │
+│ "Note ID",Note                                                                                                                              │
+│ 1,"Average price estimates for these products are derived using transaction data from Canadian grocery retailers. The composition of a gi…  │
+│ 2,"For concepts and definitions, see the <a href="https://www150.statcan.gc.ca/n1/pub/62f0014m/62f0014m2022007-eng.htm" rel="external noo…  │
+│ 3,"Specific size - In most cases, a specific size or quantity can be easily identified as the measure of best fit for a particular produc…  │
+│ 4,"Standardized size - For certain products which are available to consumers in a wide variety of package sizes, prices for products with…  │
+│ 5,"With the release of data for the January 2024 reference month, this table has been updated to incorporate data from additional grocery…  │
+│ 6,"With the release of data for the September 2025 reference month, this table has been updated to include data from the Yukon and the No…  │
+│ NULL                                                                                                                                        │
+│ "Correction ID","Correction Date","Correction Note"                                                                                         │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                             163 rows (40 shown)                                                             │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+D 
+D 
+D 
+D 
+D 
+D 
+D 
+D 
+D SELECT REF_DATE, Products, VALUE
+  FROM '18100245.csv'
+  WHERE GEO = 'Quebec'
+    AND REF_DATE >= '2024-01'
+    AND Products IN (
+      'Milk, 1 litre',
+      'Bread, 675 grams',
+      'Eggs, 1 dozen',
+      'Ground beef, per kilogram',
+      'Chicken breasts, per kilogram'
+    )
+  ORDER BY Products, REF_DATE;
+┌──────────┬───────────────────────────────┬────────┐
+│ REF_DATE │           Products            │ VALUE  │
+│ varchar  │            varchar            │ double │
+├──────────┼───────────────────────────────┼────────┤
+│ 2024-01  │ Chicken breasts, per kilogram │  11.22 │
+│ 2024-02  │ Chicken breasts, per kilogram │  12.12 │
+│ 2024-03  │ Chicken breasts, per kilogram │   12.1 │
+│ 2024-04  │ Chicken breasts, per kilogram │  12.27 │
+│ 2024-05  │ Chicken breasts, per kilogram │  12.56 │
+│ 2024-06  │ Chicken breasts, per kilogram │  12.01 │
+│ 2024-07  │ Chicken breasts, per kilogram │  11.67 │
+│ 2024-08  │ Chicken breasts, per kilogram │  12.48 │
+│ 2024-09  │ Chicken breasts, per kilogram │   12.5 │
+│ 2024-10  │ Chicken breasts, per kilogram │   12.4 │
+│ 2024-11  │ Chicken breasts, per kilogram │   11.8 │
+│ 2024-12  │ Chicken breasts, per kilogram │  11.19 │
+│ 2025-01  │ Chicken breasts, per kilogram │   12.2 │
+│ 2025-02  │ Chicken breasts, per kilogram │  12.73 │
+│ 2025-03  │ Chicken breasts, per kilogram │  12.83 │
+│ 2025-04  │ Chicken breasts, per kilogram │  12.54 │
+│ 2025-05  │ Chicken breasts, per kilogram │  13.97 │
+│ 2025-06  │ Chicken breasts, per kilogram │  14.98 │
+│ 2025-07  │ Chicken breasts, per kilogram │  13.77 │
+│ 2025-08  │ Chicken breasts, per kilogram │   15.4 │
+│    ·     │       ·                       │     ·  │
+│    ·     │       ·                       │     ·  │
+│    ·     │       ·                       │     ·  │
+│ 2024-09  │ Milk, 1 litre                 │   2.79 │
+│ 2024-10  │ Milk, 1 litre                 │    2.8 │
+│ 2024-11  │ Milk, 1 litre                 │   2.82 │
+│ 2024-12  │ Milk, 1 litre                 │   2.83 │
+│ 2025-01  │ Milk, 1 litre                 │   2.79 │
+│ 2025-02  │ Milk, 1 litre                 │   2.84 │
+│ 2025-03  │ Milk, 1 litre                 │   2.86 │
+│ 2025-04  │ Milk, 1 litre                 │   2.84 │
+│ 2025-05  │ Milk, 1 litre                 │   2.87 │
+│ 2025-06  │ Milk, 1 litre                 │   2.88 │
+│ 2025-07  │ Milk, 1 litre                 │   2.88 │
+│ 2025-08  │ Milk, 1 litre                 │    2.9 │
+│ 2025-09  │ Milk, 1 litre                 │   2.88 │
+│ 2025-10  │ Milk, 1 litre                 │   2.87 │
+│ 2025-11  │ Milk, 1 litre                 │   2.87 │
+│ 2025-12  │ Milk, 1 litre                 │   2.82 │
+│ 2026-01  │ Milk, 1 litre                 │   2.87 │
+│ 2026-02  │ Milk, 1 litre                 │   2.91 │
+│ 2026-03  │ Milk, 1 litre                 │   2.93 │
+│ 2026-04  │ Milk, 1 litre                 │   2.93 │
+├──────────┴───────────────────────────────┴────────┤
+│ 112 rows (40 shown)                     3 columns │
+└───────────────────────────────────────────────────┘
+D 
+D 
+D 
+D 
+D SELECT Products,
+         first(VALUE ORDER BY REF_DATE) AS price_start,
+         last(VALUE ORDER BY REF_DATE)  AS price_now,
+         round(100.0 * (last(VALUE ORDER BY REF_DATE) / first(VALUE ORDER BY REF_DATE) - 1), 1) AS pct_change
+  FROM '18100245.csv'
+  WHERE GEO = 'Quebec' AND REF_DATE >= '2025-04'
+  GROUP BY Products
+  HAVING count(*) >= 6
+  ORDER BY pct_change DESC
+  LIMIT 15;
+┌─────────────────────────────────────┬─────────────┬───────────┬────────────┐
+│              Products               │ price_start │ price_now │ pct_change │
+│               varchar               │   double    │  double   │   double   │
+├─────────────────────────────────────┼─────────────┼───────────┼────────────┤
+│ Beef striploin cuts, per kilogram   │       26.07 │     40.87 │       56.8 │
+│ Tomatoes, per kilogram              │        4.72 │      7.11 │       50.6 │
+│ Beef top sirloin cuts, per kilogram │        27.7 │     38.59 │       39.3 │
+│ Broccoli, unit                      │        2.06 │      2.62 │       27.2 │
+│ Canned baked beans, 398 millilitres │        1.51 │      1.87 │       23.8 │
+│ Potatoes, 4.54 kilograms            │        3.66 │      4.47 │       22.1 │
+│ Meatless burgers, 226 grams         │        5.68 │      6.88 │       21.1 │
+│ Oranges, per kilogram               │         3.8 │      4.56 │       20.0 │
+│ Celery, unit                        │         3.0 │       3.6 │       20.0 │
+│ Roasted or ground coffee, 340 grams │        8.16 │      9.77 │       19.7 │
+│ Almonds, 200 grams                  │        5.13 │      5.99 │       16.8 │
+│ Chicken drumsticks, per kilogram    │        5.13 │      5.98 │       16.6 │
+│ Romaine lettuce, unit               │        3.28 │      3.82 │       16.5 │
+│ Cucumber, unit                      │        1.26 │      1.45 │       15.1 │
+│ Beef stewing cuts, per kilogram     │       18.41 │     21.14 │       14.8 │
+├─────────────────────────────────────┴─────────────┴───────────┴────────────┤
+│ 15 rows                                                          4 columns │
+└────────────────────────────────────────────────────────────────────────────┘
+D 
