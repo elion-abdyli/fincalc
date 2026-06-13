@@ -1,0 +1,32 @@
+name: ok
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: pwd
+        run: pwd
+      - name: tree
+        run: tree .
+      - name: find
+        run: find .
+      - name: git ls-files
+        run: git ls-files
+      - name: shell success
+        run: echo "OK"
+      - name: astral-sh/setup-uv
+        uses: astral-sh/setup-uv@v7.4.0
+      - name: uv sync
+        run: uv sync
+      - name: add-tools.sh
+        run: ./add-tools.sh
+      - name: uv run
+        run: uv run load_data.py
