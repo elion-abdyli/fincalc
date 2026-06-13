@@ -9,7 +9,7 @@ st.write("welcome")
 
 interest = st.slider(
     label = 'interest',
-    value = 1.0,
+    value = 1.02,
     min_value = 1.0,
     max_value = 1.25,
     step = 0.01,
