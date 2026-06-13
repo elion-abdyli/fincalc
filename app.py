@@ -3,7 +3,7 @@ import duckdb
 import pandas as pd
 import seaborn as sns
 import plotly.express as px
-st.set_page_config(page_title='pagetitle', layout='wide', initial_sidebar_state=None, menu_items=None)
+st.set_page_config(page_title='fincalc', layout='wide', initial_sidebar_state=None, menu_items=None)
 
 st.write("welcome")
 
