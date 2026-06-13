@@ -7,21 +7,29 @@ st.set_page_config(page_title='pagetitle', layout='wide', initial_sidebar_state=
 
 st.write("welcome")
 
-rel = duckdb.sql("""
+interest = st.slider(
+    label = 'interest',
+    value = 1.0,
+    min_value = 1.0,
+    max_value = 1.25,
+    step = 0.01,
+    )
+
+rel = duckdb.sql(f"""
                  create or replace sequence hsec;
                  select
                  range::date as date,
                  1 as one,
                  row_number () over (order by range) as hsec,
-                 1.01**hsec as exp2
-                 from range(date '2026-01-01', date '2027-01-01', interval 1 day)
+                 {interest}**hsec as exp2
+                 from range(date '2026-01-01', date '2036-01-01', interval 1 month)
                  """)
 
 c1,c2 = st.columns(2)
 
 df = rel.df().set_index('date')
 
-c1.dataframe(df, height = 600)
+c1.dataframe(df, height = 'content')
 # st.data_editor(rel)
 
-c2.scatter_chart(df, size = 5, height = 600)
+c2.scatter_chart(df, size = 50, height = 600)
