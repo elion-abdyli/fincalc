@@ -16,12 +16,9 @@ interest = st.slider(
     )
 
 rel = duckdb.sql(f"""
-                 create or replace sequence hsec;
                  select
                  range::date as date,
-                 1 as one,
-                 row_number () over (order by range) as hsec,
-                 {interest}**hsec as exp2
+                 {interest}**(row_number() over (order by range) - 1) as compound
                  from range(date '2026-01-01', date '2036-01-01', interval 1 month)
                  """)
 
