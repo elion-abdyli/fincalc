@@ -10,7 +10,7 @@ st.write("welcome")
 rel = duckdb.sql("""
                  create or replace sequence hsec;
                  select
-                 range::date as r,
+                 range::date as date,
                  1 as one,
                  row_number () over (order by range) as hsec,
                  1.01**hsec as exp2
@@ -19,7 +19,9 @@ rel = duckdb.sql("""
 
 c1,c2 = st.columns(2)
 
-c1.dataframe(rel, height = 600)
+df = rel.df().set_index('date')
+
+c1.dataframe(df, height = 600)
 # st.data_editor(rel)
 
-c2.scatter_chart(rel.df().set_index('r'), size = 5, height = 600)
+c2.scatter_chart(df, size = 5, height = 600)
