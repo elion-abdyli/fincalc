@@ -31,9 +31,9 @@ hash -r
 
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
-curl https://install.duckdb.org | DUCKDB_VERSION=1.4.4 sh
+curl https://install.duckdb.org |  sh
 
-cmd="export PATH='/home/$(whoami)/.duckdb/cli/1.4.4':\$PATH"
+cmd="export PATH='/home/$(whoami)/.duckdb/cli/1.5.4':\$PATH"
 grep --quiet --line-regexp --fixed-strings "$cmd" ~/.bashrc ||
 printf '\n%s\n' "$cmd" >> ~/.bashrc
 hash -r
