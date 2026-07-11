@@ -11,7 +11,31 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 st.set_page_config(page_title="Pavilion radius map", layout="wide")
-st.title("Pavilion coverage map — 50 km & 150 km radii")
+
+# ---------------------------------------------------------------
+# Full-screen CSS: strip Streamlit padding/header, let map fill viewport
+# ---------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+      #MainMenu, header, footer {visibility: hidden;}
+      .block-container {
+          padding: 0 !important;
+          margin: 0 !important;
+          max-width: 100% !important;
+      }
+      [data-testid="stAppViewContainer"] > .main {
+          overflow: hidden;
+      }
+      iframe[title="streamlit_folium.st_folium"] {
+          width: 100vw !important;
+          height: 100vh !important;
+      }
+      div[data-testid="stVerticalBlock"] {gap: 0rem;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------
 # Locations (exact coordinates)
@@ -36,15 +60,16 @@ LOCATIONS = [
 RADII_KM = [50, 150]
 
 # ---------------------------------------------------------------
-# Sidebar controls
+# Sidebar controls (title/legend moved here to free the canvas)
 # ---------------------------------------------------------------
 with st.sidebar:
-    st.header("Layers")
+    st.header("Pavilion coverage map")
     show_50 = st.checkbox("Show 50 km circles", value=True)
     show_150 = st.checkbox("Show 150 km circles", value=True)
     st.caption(
         "Blue = Pavillon Jean-Coutu (UdeM, Montréal)\n\n"
-        "Red = Pavillon Ferdinand-Vandry (ULaval, Québec City)"
+        "Red = Pavillon Ferdinand-Vandry (ULaval, Québec City)\n\n"
+        "Solid = 50 km · dashed = 150 km. True geodesic radii."
     )
 
 # ---------------------------------------------------------------
@@ -56,7 +81,6 @@ center_lon = sum(loc["lon"] for loc in LOCATIONS) / len(LOCATIONS)
 m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="OpenStreetMap")
 
 for loc in LOCATIONS:
-    # Pin
     folium.Marker(
         location=[loc["lat"], loc["lon"]],
         popup=folium.Popup(f"<b>{loc['name']}</b><br>{loc['address']}", max_width=280),
@@ -64,7 +88,6 @@ for loc in LOCATIONS:
         icon=folium.Icon(color=loc["color"], icon="graduation-cap", prefix="fa"),
     ).add_to(m)
 
-    # Radius circles (folium.Circle takes meters and is geodesically accurate)
     for radius_km in RADII_KM:
         if radius_km == 50 and not show_50:
             continue
@@ -81,9 +104,4 @@ for loc in LOCATIONS:
             tooltip=f"{radius_km} km around {loc['name']}",
         ).add_to(m)
 
-st_folium(m, use_container_width=True, height=1080, returned_objects=[])
-
-st.caption(
-    "Solid circles = 50 km · dashed circles = 150 km. "
-    "Circles are true geodesic radii, not screen-pixel circles."
-)
+st_folium(m, use_container_width=True, height=1200, returned_objects=[])
