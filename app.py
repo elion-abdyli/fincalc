@@ -58,10 +58,10 @@ dist AS (
     SELECT
         s.osm_id,
         string_agg(
-            round(ST_Distance_Spheroid(s.geom, p.pgeom) / 1000, 1)::VARCHAR
+            round(ST_Distance_Spheroid(s.geom::POINT_2D, p.pgeom::POINT_2D) / 1000, 1)::VARCHAR
                 || ' km — ' || p.short,
             '<br>'
-            ORDER BY ST_Distance_Spheroid(s.geom, p.pgeom)
+            ORDER BY ST_Distance_Spheroid(s.geom::POINT_2D, p.pgeom::POINT_2D)
         ) AS dist_html
     FROM silver_pharmacies s
     CROSS JOIN pav_geom p
