@@ -26,7 +26,6 @@ PAVILIONS = [
 ]
 
 ETL_SQL = """
-INSTALL spatial; LOAD spatial;
 SET force_download = true;
 
 CREATE OR REPLACE TABLE bronze AS
@@ -36,40 +35,43 @@ CREATE OR REPLACE TABLE silver_pharmacies AS
 WITH elems AS (
     SELECT unnest(elements, recursive := true) FROM bronze
 )
-SELECT
-    id AS osm_id,
-    tags,
-    ST_SetCRS(ST_Point(lon, lat), 'OGC:CRS84') AS geom
+SELECT id AS osm_id, tags, lat, lon
 FROM elems
 WHERE lat IS NOT NULL AND lon IS NOT NULL;
 """
 
 POINTS_SQL = """
-WITH pav(short, lat, lon) AS (
+WITH pav(short, plat, plon) AS (
     VALUES
         ('UdeM',   45.5003731, -73.6147689),
         ('ULaval', 46.7778727, -71.2778118)
-),
-pav_geom AS (
-    SELECT short, ST_SetCRS(ST_Point(lon, lat), 'OGC:CRS84') AS pgeom
-    FROM pav
 ),
 dist AS (
     SELECT
         s.osm_id,
         string_agg(
-            round(ST_Distance_Spheroid(s.geom::POINT_2D, p.pgeom::POINT_2D) / 1000, 1)::VARCHAR
-                || ' km — ' || p.short,
+            round(
+                2 * 6371 * asin(sqrt(
+                    sin(radians(p.plat - s.lat) / 2) ^ 2
+                    + cos(radians(s.lat)) * cos(radians(p.plat))
+                      * sin(radians(p.plon - s.lon) / 2) ^ 2
+                )),
+            1)::VARCHAR || ' km — ' || p.short,
             '<br>'
-            ORDER BY ST_Distance_Spheroid(s.geom::POINT_2D, p.pgeom::POINT_2D)
+            ORDER BY
+                2 * 6371 * asin(sqrt(
+                    sin(radians(p.plat - s.lat) / 2) ^ 2
+                    + cos(radians(s.lat)) * cos(radians(p.plat))
+                      * sin(radians(p.plon - s.lon) / 2) ^ 2
+                ))
         ) AS dist_html
     FROM silver_pharmacies s
-    CROSS JOIN pav_geom p
+    CROSS JOIN pav p
     GROUP BY s.osm_id
 )
 SELECT
-    ST_Y(s.geom) AS lat,
-    ST_X(s.geom) AS lon,
+    s.lat,
+    s.lon,
     '<b>' || coalesce(s.tags['name'], 'Pharmacy') || '</b>'
     || coalesce('<br>' || array_to_string(
         list_transform(
@@ -94,7 +96,6 @@ JOIN dist d USING (osm_id)
 def load_points():
     con = duckdb.connect(DB_PATH)
     try:
-        con.execute("INSTALL spatial; LOAD spatial;")
         exists = con.execute(
             "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'silver_pharmacies'"
         ).fetchone()[0]
