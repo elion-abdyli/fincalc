@@ -50,7 +50,13 @@ def get_db():
 def execute_pipeline(con):
     overpass_ql = '[out:json][timeout:180];area["ISO3166-2"="CA-QC"]->.qc;(nwr["amenity"="pharmacy"](area.qc););out center tags;'
     url = OVERPASS_BASE + "?data=" + quote(overpass_ql)
-    with urllib.request.urlopen(url, timeout=200) as resp:
+    
+    req = urllib.request.Request(
+        url,
+        headers={'User-Agent': 'DuckDB_Spatial_ETL/1.0'}
+    )
+    
+    with urllib.request.urlopen(req, timeout=200) as resp:
         with open(PAYLOAD_PATH, "wb") as f:
             f.write(resp.read())
 
