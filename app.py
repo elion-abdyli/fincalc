@@ -8,7 +8,6 @@ Run with:
 """
 
 from datetime import datetime, timezone
-from math import asin, cos, radians, sin, sqrt
 
 import duckdb
 import folium
@@ -95,6 +94,20 @@ def get_db():
             value VARCHAR
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS pavilions (
+            name  VARCHAR PRIMARY KEY,
+            lat   DOUBLE,
+            lon   DOUBLE,
+            color VARCHAR
+        )
+    """)
+    con.executemany(
+        """INSERT INTO pavilions (name, lat, lon, color) VALUES (?, ?, ?, ?)
+           ON CONFLICT (name) DO UPDATE
+           SET lat = excluded.lat, lon = excluded.lon, color = excluded.color""",
+        [(loc["name"], loc["lat"], loc["lon"], loc["color"]) for loc in LOCATIONS],
+    )
     return con
 
 
@@ -108,11 +121,49 @@ def _is_cache_fresh(con):
     return (datetime.now(timezone.utc) - fetched_at).total_seconds() < CACHE_TTL_SECONDS
 
 
-def _load_pharmacies(con):
-    rows = con.execute(
-        "SELECT name, lat, lon, address, operator, hours FROM pharmacies"
-    ).fetchall()
-    keys = ("name", "lat", "lon", "address", "operator", "hours")
+def _load_pharmacies(con, max_dist_km):
+    """Query pharmacies from DuckDB, computing nearest pavilion and all distances
+    via the built-in haversine() function. Returns only rows within max_dist_km."""
+    rows = con.execute("""
+        WITH all_dists AS (
+            SELECT
+                p.osm_type, p.osm_id,
+                p.name, p.lat, p.lon, p.address, p.operator, p.hours,
+                pav.name  AS pavilion_name,
+                pav.color AS color,
+                haversine(p.lat, p.lon, pav.lat, pav.lon) AS dist_km
+            FROM pharmacies p
+            CROSS JOIN pavilions pav
+        ),
+        nearest AS (
+            SELECT DISTINCT ON (osm_type, osm_id)
+                osm_type, osm_id,
+                name, lat, lon, address, operator, hours,
+                pavilion_name AS nearest_pavilion,
+                color,
+                dist_km      AS nearest_dist_km
+            FROM all_dists
+            ORDER BY osm_type, osm_id, dist_km
+        ),
+        dists_agg AS (
+            SELECT
+                osm_type, osm_id,
+                LIST({'pavilion': pavilion_name, 'dist_km': dist_km}
+                     ORDER BY dist_km) AS all_dists
+            FROM all_dists
+            GROUP BY osm_type, osm_id
+        )
+        SELECT
+            n.name, n.lat, n.lon, n.address, n.operator, n.hours,
+            n.nearest_pavilion, n.color, n.nearest_dist_km,
+            d.all_dists
+        FROM nearest n
+        JOIN dists_agg d USING (osm_type, osm_id)
+        WHERE n.nearest_dist_km <= ?
+        ORDER BY n.nearest_dist_km
+    """, [max_dist_km]).fetchall()
+    keys = ("name", "lat", "lon", "address", "operator", "hours",
+            "nearest_pavilion", "color", "nearest_dist_km", "all_dists")
     return [dict(zip(keys, row)) for row in rows]
 
 
@@ -144,10 +195,10 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def fetch_pharmacies(force_refresh=False):
-    """Load pharmacies from DuckDB cache, or fetch from Overpass if stale/forced."""
+    """Ensure the DuckDB pharmacy cache is fresh, fetching from Overpass if needed."""
     con = get_db()
     if not force_refresh and _is_cache_fresh(con):
-        return _load_pharmacies(con)
+        return
 
     query = (
         "[out:json][timeout:180];"
@@ -185,19 +236,6 @@ def fetch_pharmacies(force_refresh=False):
         })
 
     _save_pharmacies(con, records)
-    return _load_pharmacies(con)
-
-
-def classify(pharm, locations):
-    """Nearest pavilion and its distance, colored by that pavilion."""
-    dists = {
-        loc["name"]: haversine_km(pharm["lat"], pharm["lon"], loc["lat"], loc["lon"])
-        for loc in locations
-    }
-    nearest = min(dists, key=dists.get)
-    d = dists[nearest]
-    color = next(l["color"] for l in locations if l["name"] == nearest)
-    return nearest, d, color, dists
 
 
 # ---------------------------------------------------------------
@@ -271,47 +309,43 @@ for loc in LOCATIONS:
 # Pharmacies
 # ---------------------------------------------------------------
 if show_pharmacies:
+    max_dist_km = 50.0 if band_filter.startswith("50") else (150.0 if band_filter.startswith("150") else 1_000_000.0)
+
     with st.spinner("Loading pharmacy data…"):
         try:
-            pharmacies = fetch_pharmacies(force_refresh=force_refresh)
+            fetch_pharmacies(force_refresh=force_refresh)
         except Exception as e:
-            pharmacies = []
             st.sidebar.error(f"Overpass query failed: {e}")
 
-    max_dist = 50.0 if band_filter.startswith("50") else (150.0 if band_filter.startswith("150") else float("inf"))
+    pharmacies = _load_pharmacies(get_db(), max_dist_km)
 
     layer = folium.FeatureGroup(name="Pharmacies").add_to(m)
     target = MarkerCluster().add_to(layer) if cluster else layer
 
-    shown = 0
     for p in pharmacies:
-        nearest, dist, color, dists = classify(p, LOCATIONS)
-        if dist > max_dist:
-            continue
-        shown += 1
-
         detail = "".join(
             f"<br>{lbl}" for lbl in (p["address"], p["operator"], p["hours"]) if lbl
         )
         dist_lines = "".join(
-            f"<br>{d:.1f} km — {n.split('—')[0].strip()}" for n, d in sorted(dists.items(), key=lambda kv: kv[1])
+            f"<br>{d['dist_km']:.1f} km — {d['pavilion'].split('—')[0].strip()}"
+            for d in p["all_dists"]
         )
 
         folium.CircleMarker(
             location=[p["lat"], p["lon"]],
             radius=4,
-            color=color,
+            color=p["color"],
             weight=1,
             fill=True,
-            fill_color=color,
+            fill_color=p["color"],
             fill_opacity=0.75,
             popup=folium.Popup(
                 f"<b>{p['name']}</b>{detail}<hr style='margin:4px 0'>{dist_lines}",
                 max_width=280,
             ),
-            tooltip=f"{p['name']} — {dist:.1f} km",
+            tooltip=f"{p['name']} — {p['nearest_dist_km']:.1f} km",
         ).add_to(target)
 
-    st.sidebar.metric("Pharmacies shown", shown)
+    st.sidebar.metric("Pharmacies shown", len(pharmacies))
 
 st_folium(m, use_container_width=True, height=1200, returned_objects=[])
