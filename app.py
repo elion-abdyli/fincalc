@@ -108,6 +108,41 @@ def get_db():
            SET lat = excluded.lat, lon = excluded.lon, color = excluded.color""",
         [(loc["name"], loc["lat"], loc["lon"], loc["color"]) for loc in LOCATIONS],
     )
+    con.execute("""
+        CREATE OR REPLACE VIEW vw_all_dists AS
+        SELECT
+            p.osm_type, p.osm_id,
+            p.name, p.lat, p.lon, p.address, p.operator, p.hours,
+            pav.name  AS pavilion_name,
+            pav.color AS color,
+            2 * 6371.0 * asin(sqrt(
+                pow(sin(radians((p.lat - pav.lat) / 2.0)), 2) +
+                cos(radians(pav.lat)) * cos(radians(p.lat)) *
+                pow(sin(radians((p.lon - pav.lon) / 2.0)), 2)
+            )) AS dist_km
+        FROM pharmacies p
+        CROSS JOIN pavilions pav
+    """)
+    con.execute("""
+        CREATE OR REPLACE VIEW vw_nearest AS
+        SELECT DISTINCT ON (osm_type, osm_id)
+            osm_type, osm_id,
+            name, lat, lon, address, operator, hours,
+            pavilion_name AS nearest_pavilion,
+            color,
+            dist_km      AS nearest_dist_km
+        FROM vw_all_dists
+        ORDER BY osm_type, osm_id, dist_km
+    """)
+    con.execute("""
+        CREATE OR REPLACE VIEW vw_dists_agg AS
+        SELECT
+            osm_type, osm_id,
+            LIST({'pavilion': pavilion_name, 'dist_km': dist_km}
+                 ORDER BY dist_km) AS all_dists
+        FROM vw_all_dists
+        GROUP BY osm_type, osm_id
+    """)
     return con
 
 
@@ -122,47 +157,14 @@ def _is_cache_fresh(con):
 
 
 def _load_pharmacies(con, max_dist_km):
-    """Query pharmacies from DuckDB, computing nearest pavilion and all distances
-    via the built-in haversine() function. Returns only rows within max_dist_km."""
+    """Query pre-classified pharmacies from DuckDB views, filtered by distance."""
     rows = con.execute("""
-        WITH all_dists AS (
-            SELECT
-                p.osm_type, p.osm_id,
-                p.name, p.lat, p.lon, p.address, p.operator, p.hours,
-                pav.name  AS pavilion_name,
-                pav.color AS color,
-                2 * 6371.0 * asin(sqrt(
-                    pow(sin(radians((p.lat - pav.lat) / 2.0)), 2) +
-                    cos(radians(pav.lat)) * cos(radians(p.lat)) *
-                    pow(sin(radians((p.lon - pav.lon) / 2.0)), 2)
-                )) AS dist_km
-            FROM pharmacies p
-            CROSS JOIN pavilions pav
-        ),
-        nearest AS (
-            SELECT DISTINCT ON (osm_type, osm_id)
-                osm_type, osm_id,
-                name, lat, lon, address, operator, hours,
-                pavilion_name AS nearest_pavilion,
-                color,
-                dist_km      AS nearest_dist_km
-            FROM all_dists
-            ORDER BY osm_type, osm_id, dist_km
-        ),
-        dists_agg AS (
-            SELECT
-                osm_type, osm_id,
-                LIST({'pavilion': pavilion_name, 'dist_km': dist_km}
-                     ORDER BY dist_km) AS all_dists
-            FROM all_dists
-            GROUP BY osm_type, osm_id
-        )
         SELECT
             n.name, n.lat, n.lon, n.address, n.operator, n.hours,
             n.nearest_pavilion, n.color, n.nearest_dist_km,
             d.all_dists
-        FROM nearest n
-        JOIN dists_agg d USING (osm_type, osm_id)
+        FROM vw_nearest n
+        JOIN vw_dists_agg d USING (osm_type, osm_id)
         WHERE n.nearest_dist_km <= ?
         ORDER BY n.nearest_dist_km
     """, [max_dist_km]).fetchall()
@@ -172,20 +174,26 @@ def _load_pharmacies(con, max_dist_km):
 
 
 def _save_pharmacies(con, records):
-    con.execute("DELETE FROM pharmacies")
-    con.executemany(
-        "INSERT INTO pharmacies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            (r["osm_type"], r["osm_id"], r["name"], r["lat"],
-             r["lon"], r["address"], r["operator"], r["hours"])
-            for r in records
-        ],
-    )
-    con.execute(
-        """INSERT INTO metadata (key, value) VALUES ('fetched_at', ?)
-           ON CONFLICT (key) DO UPDATE SET value = excluded.value""",
-        [datetime.now(timezone.utc).isoformat()],
-    )
+    con.execute("BEGIN")
+    try:
+        con.execute("DELETE FROM pharmacies")
+        con.executemany(
+            "INSERT INTO pharmacies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (r["osm_type"], r["osm_id"], r["name"], r["lat"],
+                 r["lon"], r["address"], r["operator"], r["hours"])
+                for r in records
+            ],
+        )
+        con.execute(
+            """INSERT INTO metadata (key, value) VALUES ('fetched_at', ?)
+               ON CONFLICT (key) DO UPDATE SET value = excluded.value""",
+            [datetime.now(timezone.utc).isoformat()],
+        )
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
 
 
 def fetch_pharmacies(force_refresh=False):
