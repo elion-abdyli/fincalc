@@ -81,7 +81,7 @@ for loc in LOCATIONS:
             tooltip=f"{radius_km} km around {loc['name']}",
         ).add_to(m)
 
-st_folium(m, use_container_width=True, height=650, returned_objects=[])
+st_folium(m, use_container_width=True, returned_objects=[])
 
 st.caption(
     "Solid circles = 50 km · dashed circles = 150 km. "
