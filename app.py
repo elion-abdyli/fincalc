@@ -117,6 +117,8 @@ def get_db():
            SET lat = excluded.lat, lon = excluded.lon, color = excluded.color""",
         [(loc["name"], loc["lat"], loc["lon"], loc["color"]) for loc in LOCATIONS],
     )
+    con.execute("LOAD httpfs")
+    con.execute("SET http_timeout = 200000")  # ms
     con.execute("""
         CREATE OR REPLACE VIEW vw_all_dists AS
         SELECT
@@ -256,9 +258,6 @@ def fetch_pharmacies(force_refresh=False):
     con = get_db()
     if not force_refresh and _is_cache_fresh(con):
         return
-
-    con.execute("LOAD httpfs")
-    con.execute("SET http_timeout = 200000")  # ms
 
     con.execute("BEGIN")
     try:
