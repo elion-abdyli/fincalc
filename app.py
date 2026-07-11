@@ -46,28 +46,27 @@ WITH pav(short, plat, plon) AS (
         ('UdeM',   45.5003731, -73.6147689),
         ('ULaval', 46.7778727, -71.2778118)
 ),
-dist AS (
+pairs AS (
     SELECT
         s.osm_id,
-        string_agg(
-            round(
-                2 * 6371 * asin(sqrt(
-                    sin(radians(p.plat - s.lat) / 2) ^ 2
-                    + cos(radians(s.lat)) * cos(radians(p.plat))
-                      * sin(radians(p.plon - s.lon) / 2) ^ 2
-                )),
-            1)::VARCHAR || ' km — ' || p.short,
-            '<br>'
-            ORDER BY
-                2 * 6371 * asin(sqrt(
-                    sin(radians(p.plat - s.lat) / 2) ^ 2
-                    + cos(radians(s.lat)) * cos(radians(p.plat))
-                      * sin(radians(p.plon - s.lon) / 2) ^ 2
-                ))
-        ) AS dist_html
+        p.short,
+        ST_Distance_Spheroid(
+            ST_Point2D(s.lon, s.lat),
+            ST_Point2D(p.plon, p.plat)
+        ) / 1000 AS km
     FROM silver_pharmacies s
     CROSS JOIN pav p
-    GROUP BY s.osm_id
+),
+dist AS (
+    SELECT
+        osm_id,
+        string_agg(
+            round(km, 1)::VARCHAR || ' km — ' || short,
+            '<br>'
+            ORDER BY km
+        ) AS dist_html
+    FROM pairs
+    GROUP BY osm_id
 )
 SELECT
     s.lat,
@@ -96,10 +95,14 @@ JOIN dist d USING (osm_id)
 def load_points():
     con = duckdb.connect(DB_PATH)
     try:
-        exists = con.execute(
-            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'silver_pharmacies'"
-        ).fetchone()[0]
-        if not exists:
+        con.execute("INSTALL spatial; LOAD spatial;")
+        ok = con.execute("""
+            SELECT count(*) = 2
+            FROM duckdb_columns()
+            WHERE table_name = 'silver_pharmacies'
+              AND column_name IN ('lat', 'lon')
+        """).fetchone()[0]
+        if not ok:
             con.execute(ETL_SQL)
         return con.execute(POINTS_SQL).df()
     finally:
