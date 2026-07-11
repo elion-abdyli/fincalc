@@ -1,5 +1,6 @@
 import duckdb
 import folium
+import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -19,8 +20,10 @@ st.markdown(
 )
 
 PAVILIONS = [
-    ("Pavillon Jean-Coutu — Université de Montréal", 45.5003731, -73.6147689, "blue"),
-    ("Pavillon Ferdinand-Vandry — Université Laval", 46.7778727, -71.2778118, "red"),
+    {"name": "Pavillon Jean-Coutu — Université de Montréal", "short": "UdeM",
+     "lat": 45.5003731, "lon": -73.6147689, "color": "blue"},
+    {"name": "Pavillon Ferdinand-Vandry — Université Laval", "short": "ULaval",
+     "lat": 46.7778727, "lon": -71.2778118, "color": "red"},
 ]
 
 ETL_SQL = """
@@ -53,18 +56,47 @@ def load_points():
         ).fetchone()[0]
         if not exists:
             con.execute(ETL_SQL)
+
+        con.register("pavilions", pd.DataFrame(PAVILIONS))
+
         return con.execute("""
+            WITH pav AS (
+                SELECT short, ST_SetCRS(ST_Point(lon, lat), 'OGC:CRS84') AS pgeom
+                FROM pavilions
+            ),
+            dist AS (
+                SELECT
+                    s.osm_id,
+                    string_agg(
+                        round(ST_Distance_Spheroid(s.geom, p.pgeom) / 1000, 1)::VARCHAR
+                            || ' km — ' || p.short,
+                        '<br>'
+                        ORDER BY ST_Distance_Spheroid(s.geom, p.pgeom)
+                    ) AS dist_html
+                FROM silver_pharmacies s
+                CROSS JOIN pav p
+                GROUP BY s.osm_id
+            )
             SELECT
-                ST_Y(geom) AS lat,
-                ST_X(geom) AS lon,
-                concat_ws('<br>',
-                    '<b>' || coalesce(tags['name'], 'Pharmacy') || '</b>',
-                    nullif(trim(concat_ws(' ', tags['addr:housenumber'], tags['addr:street'])), ''),
-                    tags['addr:city'],
-                    tags['operator'],
-                    tags['opening_hours']
-                ) AS tooltip_html
-            FROM silver_pharmacies
+                ST_Y(s.geom) AS lat,
+                ST_X(s.geom) AS lon,
+                '<b>' || coalesce(s.tags['name'], 'Pharmacy') || '</b>'
+                || coalesce('<br>' || array_to_string(
+                    list_transform(
+                        list_filter(
+                            map_entries(s.tags),
+                            lambda e: e.key NOT IN (
+                                'name', 'amenity', 'healthcare',
+                                'brand:wikidata', 'brand:wikipedia'
+                            )
+                        ),
+                        lambda e: '<i>' || e.key || ':</i> ' || e.value
+                    ),
+                    '<br>'
+                ), '')
+                || '<hr style="margin:4px 0">' || d.dist_html AS tooltip_html
+            FROM silver_pharmacies s
+            JOIN dist d USING (osm_id)
         """).df()
     finally:
         con.close()
@@ -73,19 +105,25 @@ def load_points():
 with st.spinner("Loading data…"):
     points = load_points()
 
-center_lat = sum(p[1] for p in PAVILIONS) / len(PAVILIONS)
-center_lon = sum(p[2] for p in PAVILIONS) / len(PAVILIONS)
+center_lat = sum(p["lat"] for p in PAVILIONS) / len(PAVILIONS)
+center_lon = sum(p["lon"] for p in PAVILIONS) / len(PAVILIONS)
 
 m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="OpenStreetMap")
 
-for name, lat, lon, color in PAVILIONS:
+for p in PAVILIONS:
     folium.Marker(
-        location=[lat, lon],
-        tooltip=name,
-        icon=folium.Icon(color=color, icon="graduation-cap", prefix="fa"),
+        location=[p["lat"], p["lon"]],
+        tooltip=p["name"],
+        icon=folium.Icon(color=p["color"], icon="graduation-cap", prefix="fa"),
     ).add_to(m)
-    folium.Circle(location=[lat, lon], radius=50_000, color=color, weight=2, fill=True, fill_opacity=0.15).add_to(m)
-    folium.Circle(location=[lat, lon], radius=150_000, color=color, weight=2, fill=True, fill_opacity=0.08, dash_array="6").add_to(m)
+    folium.Circle(
+        location=[p["lat"], p["lon"]], radius=50_000,
+        color=p["color"], weight=2, fill=True, fill_opacity=0.15,
+    ).add_to(m)
+    folium.Circle(
+        location=[p["lat"], p["lon"]], radius=150_000,
+        color=p["color"], weight=2, fill=True, fill_opacity=0.08, dash_array="6",
+    ).add_to(m)
 
 for row in points.itertuples():
     folium.CircleMarker(
