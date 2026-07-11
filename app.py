@@ -85,7 +85,8 @@ def fetch_pharmacies(locations, radius_km):
     )
     query = f"[out:json][timeout:90];({clauses});out center tags;"
 
-    r = requests.post(OVERPASS_URL, data={"data": query}, timeout=120)
+    headers = {"User-Agent": "fincalc/0.1 (educational project)"}
+    r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=120)
     r.raise_for_status()
 
     seen, results = set(), []
