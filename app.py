@@ -9,6 +9,7 @@ Run with:
 
 from datetime import datetime, timezone
 from urllib.parse import quote
+import urllib.request
 
 import duckdb
 import folium
@@ -65,7 +66,8 @@ LOCATIONS = [
 
 RADII_KM = [50, 150]
 OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
-DB_PATH = "/tmp/pharmacies.duckdb"
+DB_PATH     = "/tmp/pharmacies.duckdb"
+PAYLOAD_PATH = "/tmp/osm_payload.json"
 CACHE_TTL_SECONDS = 86_400  # 24 hours
 
 # ---------------------------------------------------------------
@@ -73,36 +75,8 @@ CACHE_TTL_SECONDS = 86_400  # 24 hours
 # ---------------------------------------------------------------
 @st.cache_resource
 def get_db():
-    """Return a single shared DuckDB connection, creating the schema if needed."""
+    """Open the DuckDB file, seed the pavilions reference table, and load httpfs."""
     con = duckdb.connect(DB_PATH)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS bronze_osm_elements (
-            fetched_at TIMESTAMPTZ,
-            osm_type   VARCHAR,
-            osm_id     BIGINT,
-            raw        JSON
-        )
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS silver_pharmacies (
-            osm_type  VARCHAR,
-            osm_id    BIGINT,
-            name      VARCHAR,
-            lat       DOUBLE,
-            lon       DOUBLE,
-            address   VARCHAR,
-            operator  VARCHAR,
-            hours     VARCHAR,
-            loaded_at TIMESTAMPTZ,
-            PRIMARY KEY (osm_type, osm_id)
-        )
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS metadata (
-            key   VARCHAR PRIMARY KEY,
-            value VARCHAR
-        )
-    """)
     con.execute("""
         CREATE TABLE IF NOT EXISTS pavilions (
             name  VARCHAR PRIMARY KEY,
@@ -119,76 +93,44 @@ def get_db():
     )
     con.execute("LOAD httpfs")
     con.execute("SET http_timeout = 200000")  # ms
-    con.execute("""
-        CREATE OR REPLACE VIEW vw_all_dists AS
-        SELECT
-            p.osm_type, p.osm_id,
-            p.name, p.lat, p.lon, p.address, p.operator, p.hours,
-            pav.name  AS pavilion_name,
-            pav.color AS color,
-            2 * 6371.0 * asin(sqrt(
-                pow(sin(radians((p.lat - pav.lat) / 2.0)), 2) +
-                cos(radians(pav.lat)) * cos(radians(p.lat)) *
-                pow(sin(radians((p.lon - pav.lon) / 2.0)), 2)
-            )) AS dist_km
-        FROM silver_pharmacies p
-        CROSS JOIN pavilions pav
-    """)
-    con.execute("""
-        CREATE OR REPLACE VIEW vw_nearest AS
-        SELECT DISTINCT ON (osm_type, osm_id)
-            osm_type, osm_id,
-            name, lat, lon, address, operator, hours,
-            pavilion_name AS nearest_pavilion,
-            color,
-            dist_km      AS nearest_dist_km
-        FROM vw_all_dists
-        ORDER BY osm_type, osm_id, dist_km
-    """)
-    con.execute("""
-        CREATE OR REPLACE VIEW vw_dists_agg AS
-        SELECT
-            osm_type, osm_id,
-            LIST({'pavilion': pavilion_name, 'dist_km': dist_km}
-                 ORDER BY dist_km) AS all_dists
-        FROM vw_all_dists
-        GROUP BY osm_type, osm_id
-    """)
     return con
 
 
 def _is_cache_fresh(con):
-    row = con.execute(
-        "SELECT value FROM metadata WHERE key = 'fetched_at'"
-    ).fetchone()
+    try:
+        row = con.execute("SELECT fetched_at FROM metadata").fetchone()
+    except duckdb.CatalogException:
+        return False
     if row is None:
         return False
-    fetched_at = datetime.fromisoformat(row[0])
+    fetched_at = row[0]
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - fetched_at).total_seconds() < CACHE_TTL_SECONDS
 
 
-def _load_pharmacies(con, max_dist_km):
-    """Query pre-classified pharmacies from DuckDB views, filtered by distance."""
-    rows = con.execute("""
-        SELECT
-            n.name, n.lat, n.lon, n.address, n.operator, n.hours,
-            n.nearest_pavilion, n.color, n.nearest_dist_km,
-            d.all_dists
-        FROM vw_nearest n
-        JOIN vw_dists_agg d USING (osm_type, osm_id)
-        WHERE n.nearest_dist_km <= ?
-        ORDER BY n.nearest_dist_km
-    """, [max_dist_km]).fetchall()
+def _load_pharmacies(con, band_filter):
+    """Query the appropriate gold view for the selected distance band."""
+    view = (
+        "vw_50km"       if band_filter.startswith("50")
+        else "vw_150km"  if band_filter.startswith("150")
+        else "vw_all_quebec"
+    )
+    rows = con.execute(
+        f"SELECT name, lat, lon, address, operator, hours, "
+        f"nearest_pavilion, color, nearest_dist_km, all_dists "
+        f"FROM {view} ORDER BY nearest_dist_km"
+    ).fetchall()
     keys = ("name", "lat", "lon", "address", "operator", "hours",
             "nearest_pavilion", "color", "nearest_dist_km", "all_dists")
     return [dict(zip(keys, row)) for row in rows]
 
 
 # ---------------------------------------------------------------
-# ETL — Bronze → Silver → Gold
+# ETL — Land → Bronze → Silver → Gold → Views
 # ---------------------------------------------------------------
-def _etl_bronze(con):
-    """Load raw OSM elements from Overpass into the bronze table via DuckDB httpfs."""
+def _download_payload():
+    """Fetch the Overpass JSON response and write it to disk."""
     overpass_ql = (
         "[out:json][timeout:180];"
         'area["ISO3166-2"="CA-QC"]->.qc;'
@@ -196,28 +138,31 @@ def _etl_bronze(con):
         "out center tags;"
     )
     url = OVERPASS_BASE + "?data=" + quote(overpass_ql)
+    with urllib.request.urlopen(url, timeout=200) as resp:
+        with open(PAYLOAD_PATH, "wb") as f:
+            f.write(resp.read())
 
-    con.execute("DELETE FROM bronze_osm_elements")
-    con.execute("""
-        INSERT INTO bronze_osm_elements (fetched_at, osm_type, osm_id, raw)
+
+def _etl_bronze(con):
+    """Bronze: SELECT * from the raw JSON file on disk."""
+    con.execute(f"""
+        CREATE OR REPLACE TABLE bronze_osm_elements AS
         SELECT
-            now()::TIMESTAMPTZ,
-            element->>'type',
-            (element->>'id')::BIGINT,
-            element
+            element->>'type'       AS osm_type,
+            (element->>'id')::BIGINT AS osm_id,
+            element                AS raw
         FROM (
             SELECT UNNEST(elements) AS element
-            FROM read_json(?, columns={'elements': 'JSON[]'})
+            FROM read_json('{PAYLOAD_PATH}', columns={{'elements': 'JSON[]'}})
         )
         WHERE element->>'type' IN ('node', 'way', 'relation')
-    """, [url])
+    """)
 
 
 def _etl_silver(con):
-    """Parse and clean bronze elements into the silver pharmacies table."""
-    con.execute("DELETE FROM silver_pharmacies")
+    """Silver: parse and clean bronze into typed columns."""
     con.execute("""
-        INSERT INTO silver_pharmacies
+        CREATE OR REPLACE TABLE silver_pharmacies AS
         WITH staged AS (
             SELECT DISTINCT ON (osm_type, osm_id)
                 osm_type,
@@ -242,41 +187,84 @@ def _etl_silver(con):
                     json_extract_string(raw, '$.tags[''addr:city'']')
                 ) AS address,
                 COALESCE(json_extract_string(raw, '$.tags.operator'), '')      AS operator,
-                COALESCE(json_extract_string(raw, '$.tags.opening_hours'), '') AS hours,
-                now()::TIMESTAMPTZ AS loaded_at
+                COALESCE(json_extract_string(raw, '$.tags.opening_hours'), '') AS hours
             FROM bronze_osm_elements
-            ORDER BY osm_type, osm_id, fetched_at DESC
+            ORDER BY osm_type, osm_id
         )
-        SELECT osm_type, osm_id, name, lat, lon, address, operator, hours, loaded_at
-        FROM staged
+        SELECT * FROM staged
         WHERE lat IS NOT NULL AND lon IS NOT NULL
     """)
 
 
+def _etl_gold(con):
+    """Gold: denormalized master table with pre-computed distances, then three views."""
+    con.execute("""
+        CREATE OR REPLACE TABLE gold_pharmacies AS
+        WITH all_dists AS (
+            SELECT
+                s.osm_type, s.osm_id,
+                s.name, s.lat, s.lon, s.address, s.operator, s.hours,
+                pav.name  AS pavilion_name,
+                pav.color AS color,
+                2 * 6371.0 * asin(sqrt(
+                    pow(sin(radians((s.lat - pav.lat) / 2.0)), 2) +
+                    cos(radians(pav.lat)) * cos(radians(s.lat)) *
+                    pow(sin(radians((s.lon - pav.lon) / 2.0)), 2)
+                )) AS dist_km
+            FROM silver_pharmacies s
+            CROSS JOIN pavilions pav
+        ),
+        nearest AS (
+            SELECT DISTINCT ON (osm_type, osm_id)
+                osm_type, osm_id,
+                name, lat, lon, address, operator, hours,
+                pavilion_name AS nearest_pavilion,
+                color,
+                dist_km       AS nearest_dist_km
+            FROM all_dists
+            ORDER BY osm_type, osm_id, dist_km
+        ),
+        dists_agg AS (
+            SELECT
+                osm_type, osm_id,
+                LIST({'pavilion': pavilion_name, 'dist_km': dist_km}
+                     ORDER BY dist_km) AS all_dists
+            FROM all_dists
+            GROUP BY osm_type, osm_id
+        )
+        SELECT
+            n.osm_type, n.osm_id,
+            n.name, n.lat, n.lon, n.address, n.operator, n.hours,
+            n.nearest_pavilion, n.color, n.nearest_dist_km,
+            d.all_dists
+        FROM nearest n
+        JOIN dists_agg d USING (osm_type, osm_id)
+    """)
+    # Gold views — one per distance band
+    con.execute("CREATE OR REPLACE VIEW vw_50km        AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 50")
+    con.execute("CREATE OR REPLACE VIEW vw_150km       AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 150")
+    con.execute("CREATE OR REPLACE VIEW vw_all_quebec  AS SELECT * FROM gold_pharmacies")
+
+
 def fetch_pharmacies(force_refresh=False):
-    """Orchestrate the full Bronze → Silver ETL inside a single transaction."""
+    """Run the full Land → Bronze → Silver → Gold pipeline if the cache is stale."""
     con = get_db()
     if not force_refresh and _is_cache_fresh(con):
         return
 
-    con.execute("BEGIN")
-    try:
-        _etl_bronze(con)
-        _etl_silver(con)
+    _download_payload()
+    _etl_bronze(con)
+    _etl_silver(con)
+    _etl_gold(con)
 
-        count = con.execute("SELECT COUNT(*) FROM silver_pharmacies").fetchone()[0]
-        if count == 0:
-            raise ValueError("ETL produced 0 pharmacies — aborting to preserve existing data.")
+    count = con.execute("SELECT COUNT(*) FROM gold_pharmacies").fetchone()[0]
+    if count == 0:
+        raise ValueError("ETL produced 0 pharmacies — aborting.")
 
-        con.execute(
-            """INSERT INTO metadata (key, value) VALUES ('fetched_at', ?)
-               ON CONFLICT (key) DO UPDATE SET value = excluded.value""",
-            [datetime.now(timezone.utc).isoformat()],
-        )
-        con.execute("COMMIT")
-    except Exception:
-        con.execute("ROLLBACK")
-        raise
+    con.execute("""
+        CREATE OR REPLACE TABLE metadata AS
+        SELECT now()::TIMESTAMPTZ AS fetched_at
+    """)
 
 
 # ---------------------------------------------------------------
@@ -350,16 +338,14 @@ for loc in LOCATIONS:
 # Pharmacies
 # ---------------------------------------------------------------
 if show_pharmacies:
-    max_dist_km = 50.0 if band_filter.startswith("50") else (150.0 if band_filter.startswith("150") else 1_000_000.0)
-
     with st.spinner("Loading pharmacy data…"):
         try:
             fetch_pharmacies(force_refresh=force_refresh)
         except Exception as e:
-            st.sidebar.error(f"Overpass query failed: {e}")
+            st.sidebar.error(f"Pipeline failed: {e}")
 
     try:
-        pharmacies = _load_pharmacies(get_db(), max_dist_km)
+        pharmacies = _load_pharmacies(get_db(), band_filter)
     except Exception as e:
         pharmacies = []
         st.sidebar.error(f"Database query failed: {e}")
