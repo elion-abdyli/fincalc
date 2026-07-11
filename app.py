@@ -76,14 +76,16 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 @st.cache_data(ttl=86_400, show_spinner="Querying OpenStreetMap for pharmacies…")
-def fetch_pharmacies(locations, radius_km):
-    """One Overpass query covering all pavilions. nwr + `out center` so that
-    pharmacies mapped as buildings (ways) get a centroid, not dropped."""
-    clauses = "".join(
-        f'nwr["amenity"="pharmacy"](around:{radius_km * 1000},{loc["lat"]},{loc["lon"]});'
-        for loc in locations
+def fetch_pharmacies():
+    """Fetch all pharmacies in the province of Quebec via the Overpass API.
+    nwr + `out center` so that pharmacies mapped as buildings (ways)
+    get a centroid, not dropped."""
+    query = (
+        "[out:json][timeout:180];"
+        'area["ISO3166-2"="CA-QC"]->.qc;'
+        '(nwr["amenity"="pharmacy"](area.qc););'
+        "out center tags;"
     )
-    query = f"[out:json][timeout:90];({clauses});out center tags;"
 
     headers = {"User-Agent": "fincalc/0.1 (educational project)"}
     r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=120)
@@ -197,7 +199,7 @@ for loc in LOCATIONS:
 # ---------------------------------------------------------------
 if show_pharmacies:
     try:
-        pharmacies = fetch_pharmacies(LOCATIONS, max(RADII_KM))
+        pharmacies = fetch_pharmacies()
     except Exception as e:
         pharmacies = []
         st.sidebar.error(f"Overpass query failed: {e}")
