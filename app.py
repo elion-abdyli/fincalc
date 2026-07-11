@@ -65,7 +65,7 @@ LOCATIONS = [
 
 RADII_KM = [50, 150]
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-DB_PATH = "pharmacies.duckdb"
+DB_PATH = "/tmp/pharmacies.duckdb"
 CACHE_TTL_SECONDS = 86_400  # 24 hours
 
 # ---------------------------------------------------------------
@@ -131,7 +131,11 @@ def _load_pharmacies(con, max_dist_km):
                 p.name, p.lat, p.lon, p.address, p.operator, p.hours,
                 pav.name  AS pavilion_name,
                 pav.color AS color,
-                haversine(p.lat, p.lon, pav.lat, pav.lon) AS dist_km
+                2 * 6371.0 * asin(sqrt(
+                    pow(sin(radians((p.lat - pav.lat) / 2.0)), 2) +
+                    cos(radians(pav.lat)) * cos(radians(p.lat)) *
+                    pow(sin(radians((p.lon - pav.lon) / 2.0)), 2)
+                )) AS dist_km
             FROM pharmacies p
             CROSS JOIN pavilions pav
         ),
@@ -184,16 +188,6 @@ def _save_pharmacies(con, records):
     )
 
 
-# ---------------------------------------------------------------
-# Geo helpers
-# ---------------------------------------------------------------
-def haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    return 2 * R * asin(sqrt(a))
-
-
 def fetch_pharmacies(force_refresh=False):
     """Ensure the DuckDB pharmacy cache is fresh, fetching from Overpass if needed."""
     con = get_db()
@@ -207,7 +201,7 @@ def fetch_pharmacies(force_refresh=False):
         "out center tags;"
     )
     headers = {"User-Agent": "fincalc/0.1 (educational project)"}
-    r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=120)
+    r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=200)
     r.raise_for_status()
 
     seen, records = set(), []
@@ -317,7 +311,11 @@ if show_pharmacies:
         except Exception as e:
             st.sidebar.error(f"Overpass query failed: {e}")
 
-    pharmacies = _load_pharmacies(get_db(), max_dist_km)
+    try:
+        pharmacies = _load_pharmacies(get_db(), max_dist_km)
+    except Exception as e:
+        pharmacies = []
+        st.sidebar.error(f"Database query failed: {e}")
 
     layer = folium.FeatureGroup(name="Pharmacies").add_to(m)
     target = MarkerCluster().add_to(layer) if cluster else layer
