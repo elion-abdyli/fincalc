@@ -13,6 +13,7 @@ import urllib.request
 
 import duckdb
 import folium
+import pandas as pd
 import streamlit as st
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
@@ -68,7 +69,7 @@ RADII_KM = [50, 150]
 OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
 DB_PATH     = "/tmp/pharmacies.duckdb"
 PAYLOAD_PATH = "/tmp/osm_payload.json"
-CACHE_TTL_SECONDS = 86_400  # 24 hours
+CACHE_TTL_SECONDS = 86_400  
 
 # ---------------------------------------------------------------
 # DuckDB helpers
@@ -77,6 +78,7 @@ CACHE_TTL_SECONDS = 86_400  # 24 hours
 def get_db():
     """Open the DuckDB file, seed the pavilions reference table, and load httpfs."""
     con = duckdb.connect(DB_PATH)
+    con.execute("INSTALL spatial; LOAD spatial;")
     con.execute("""
         CREATE TABLE IF NOT EXISTS pavilions (
             name  VARCHAR PRIMARY KEY,
@@ -91,8 +93,6 @@ def get_db():
            SET lat = excluded.lat, lon = excluded.lon, color = excluded.color""",
         [(loc["name"], loc["lat"], loc["lon"], loc["color"]) for loc in LOCATIONS],
     )
-    con.execute("LOAD httpfs")
-    con.execute("SET http_timeout = 200000")  # ms
     return con
 
 
@@ -109,21 +109,18 @@ def _is_cache_fresh(con):
     return (datetime.now(timezone.utc) - fetched_at).total_seconds() < CACHE_TTL_SECONDS
 
 
-def _load_pharmacies(con, band_filter):
+def _load_pharmacies(con, band_filter) -> pd.DataFrame:
     """Query the appropriate gold view for the selected distance band."""
     view = (
         "vw_50km"       if band_filter.startswith("50")
         else "vw_150km"  if band_filter.startswith("150")
         else "vw_all_quebec"
     )
-    rows = con.execute(
+    return con.execute(
         f"SELECT name, lat, lon, address, operator, hours, "
         f"nearest_pavilion, color, nearest_dist_km, all_dists "
         f"FROM {view} ORDER BY nearest_dist_km"
-    ).fetchall()
-    keys = ("name", "lat", "lon", "address", "operator", "hours",
-            "nearest_pavilion", "color", "nearest_dist_km", "all_dists")
-    return [dict(zip(keys, row)) for row in rows]
+    ).df()
 
 
 # ---------------------------------------------------------------
@@ -206,11 +203,10 @@ def _etl_gold(con):
                 s.name, s.lat, s.lon, s.address, s.operator, s.hours,
                 pav.name  AS pavilion_name,
                 pav.color AS color,
-                2 * 6371.0 * asin(sqrt(
-                    pow(sin(radians((s.lat - pav.lat) / 2.0)), 2) +
-                    cos(radians(pav.lat)) * cos(radians(s.lat)) *
-                    pow(sin(radians((s.lon - pav.lon) / 2.0)), 2)
-                )) AS dist_km
+                ST_Distance_Spheroid(
+                    ST_Point(s.lon, s.lat),
+                    ST_Point(pav.lon, pav.lat)
+                ) / 1000.0 AS dist_km
             FROM silver_pharmacies s
             CROSS JOIN pavilions pav
         ),
@@ -240,7 +236,7 @@ def _etl_gold(con):
         FROM nearest n
         JOIN dists_agg d USING (osm_type, osm_id)
     """)
-    # Gold views — one per distance band
+    
     con.execute("CREATE OR REPLACE VIEW vw_50km        AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 50")
     con.execute("CREATE OR REPLACE VIEW vw_150km       AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 150")
     con.execute("CREATE OR REPLACE VIEW vw_all_quebec  AS SELECT * FROM gold_pharmacies")
@@ -347,35 +343,36 @@ if show_pharmacies:
     try:
         pharmacies = _load_pharmacies(get_db(), band_filter)
     except Exception as e:
-        pharmacies = []
+        pharmacies = pd.DataFrame()
         st.sidebar.error(f"Database query failed: {e}")
 
     layer = folium.FeatureGroup(name="Pharmacies").add_to(m)
     target = MarkerCluster().add_to(layer) if cluster else layer
 
-    for p in pharmacies:
+    def _add_marker(row):
         detail = "".join(
-            f"<br>{lbl}" for lbl in (p["address"], p["operator"], p["hours"]) if lbl
+            f"<br>{lbl}" for lbl in (row.address, row.operator, row.hours) if lbl
         )
         dist_lines = "".join(
             f"<br>{d['dist_km']:.1f} km — {d['pavilion'].split('—')[0].strip()}"
-            for d in p["all_dists"]
+            for d in row.all_dists
         )
-
         folium.CircleMarker(
-            location=[p["lat"], p["lon"]],
+            location=[row.lat, row.lon],
             radius=4,
-            color=p["color"],
+            color=row.color,
             weight=1,
             fill=True,
-            fill_color=p["color"],
+            fill_color=row.color,
             fill_opacity=0.75,
             popup=folium.Popup(
-                f"<b>{p['name']}</b>{detail}<hr style='margin:4px 0'>{dist_lines}",
+                f"<b>{row['name']}</b>{detail}<hr style='margin:4px 0'>{dist_lines}",
                 max_width=280,
             ),
-            tooltip=f"{p['name']} — {p['nearest_dist_km']:.1f} km",
+            tooltip=f"{row['name']} — {row.nearest_dist_km:.1f} km",
         ).add_to(target)
+
+    pharmacies.apply(_add_marker, axis=1)
 
     st.sidebar.metric("Pharmacies shown", len(pharmacies))
 
