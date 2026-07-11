@@ -1,6 +1,5 @@
 import duckdb
 import folium
-import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -45,6 +44,51 @@ FROM elems
 WHERE lat IS NOT NULL AND lon IS NOT NULL;
 """
 
+POINTS_SQL = """
+WITH pav(short, lat, lon) AS (
+    VALUES
+        ('UdeM',   45.5003731, -73.6147689),
+        ('ULaval', 46.7778727, -71.2778118)
+),
+pav_geom AS (
+    SELECT short, ST_SetCRS(ST_Point(lon, lat), 'OGC:CRS84') AS pgeom
+    FROM pav
+),
+dist AS (
+    SELECT
+        s.osm_id,
+        string_agg(
+            round(ST_Distance_Spheroid(s.geom, p.pgeom) / 1000, 1)::VARCHAR
+                || ' km — ' || p.short,
+            '<br>'
+            ORDER BY ST_Distance_Spheroid(s.geom, p.pgeom)
+        ) AS dist_html
+    FROM silver_pharmacies s
+    CROSS JOIN pav_geom p
+    GROUP BY s.osm_id
+)
+SELECT
+    ST_Y(s.geom) AS lat,
+    ST_X(s.geom) AS lon,
+    '<b>' || coalesce(s.tags['name'], 'Pharmacy') || '</b>'
+    || coalesce('<br>' || array_to_string(
+        list_transform(
+            list_filter(
+                map_entries(s.tags),
+                lambda e: e.key NOT IN (
+                    'name', 'amenity', 'healthcare',
+                    'brand:wikidata', 'brand:wikipedia'
+                )
+            ),
+            lambda e: '<i>' || e.key || ':</i> ' || e.value
+        ),
+        '<br>'
+    ), '')
+    || '<hr style="margin:4px 0">' || d.dist_html AS tooltip_html
+FROM silver_pharmacies s
+JOIN dist d USING (osm_id)
+"""
+
 
 @st.cache_data
 def load_points():
@@ -56,48 +100,7 @@ def load_points():
         ).fetchone()[0]
         if not exists:
             con.execute(ETL_SQL)
-
-        con.register("pavilions", pd.DataFrame(PAVILIONS))
-
-        return con.execute("""
-            WITH pav AS (
-                SELECT short, ST_SetCRS(ST_Point(lon, lat), 'OGC:CRS84') AS pgeom
-                FROM pavilions
-            ),
-            dist AS (
-                SELECT
-                    s.osm_id,
-                    string_agg(
-                        round(ST_Distance_Spheroid(s.geom, p.pgeom) / 1000, 1)::VARCHAR
-                            || ' km — ' || p.short,
-                        '<br>'
-                        ORDER BY ST_Distance_Spheroid(s.geom, p.pgeom)
-                    ) AS dist_html
-                FROM silver_pharmacies s
-                CROSS JOIN pav p
-                GROUP BY s.osm_id
-            )
-            SELECT
-                ST_Y(s.geom) AS lat,
-                ST_X(s.geom) AS lon,
-                '<b>' || coalesce(s.tags['name'], 'Pharmacy') || '</b>'
-                || coalesce('<br>' || array_to_string(
-                    list_transform(
-                        list_filter(
-                            map_entries(s.tags),
-                            lambda e: e.key NOT IN (
-                                'name', 'amenity', 'healthcare',
-                                'brand:wikidata', 'brand:wikipedia'
-                            )
-                        ),
-                        lambda e: '<i>' || e.key || ':</i> ' || e.value
-                    ),
-                    '<br>'
-                ), '')
-                || '<hr style="margin:4px 0">' || d.dist_html AS tooltip_html
-            FROM silver_pharmacies s
-            JOIN dist d USING (osm_id)
-        """).df()
+        return con.execute(POINTS_SQL).df()
     finally:
         con.close()
 
