@@ -1,15 +1,5 @@
-"""
-Streamlit app: map of two university pavilions with 50 km / 150 km radius circles,
-plus every OSM-tagged pharmacy in the province of Quebec.
-
-Run with:
-    pip install streamlit folium streamlit-folium duckdb
-    streamlit run app.py
-"""
-
-from datetime import datetime, timezone
-from urllib.parse import quote
 import urllib.request
+from urllib.parse import quote
 
 import duckdb
 import folium
@@ -18,330 +8,167 @@ import streamlit as st
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
-st.set_page_config(page_title="Pavilion radius map", layout="wide")
+st.set_page_config(page_title="Pavilion map", layout="wide")
 
-# ---------------------------------------------------------------
-# Full-screen CSS: strip Streamlit padding/header, let map fill viewport
-# ---------------------------------------------------------------
 st.markdown(
     """
     <style>
       #MainMenu, header, footer {visibility: hidden;}
-      .block-container {
-          padding: 0 !important;
-          margin: 0 !important;
-          max-width: 100% !important;
-      }
-      [data-testid="stAppViewContainer"] > .main {
-          overflow: hidden;
-      }
-      iframe[title="streamlit_folium.st_folium"] {
-          width: 100vw !important;
-          height: 100vh !important;
-      }
+      .block-container {padding: 0 !important; margin: 0 !important; max-width: 100% !important;}
+      [data-testid="stAppViewContainer"] > .main {overflow: hidden;}
+      iframe[title="streamlit_folium.st_folium"] {width: 100vw !important; height: 100vh !important;}
       div[data-testid="stVerticalBlock"] {gap: 0rem;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------------
-# Locations (exact coordinates)
-# ---------------------------------------------------------------
-LOCATIONS = [
-    {
-        "name": "Pavillon Jean-Coutu — Université de Montréal",
-        "address": "2940 Chemin de Polytechnique, Montréal, QC",
-        "lat": 45.5003731,
-        "lon": -73.6147689,
-        "color": "blue",
-    },
-    {
-        "name": "Pavillon Ferdinand-Vandry — Université Laval",
-        "address": "1600 Avenue des Sciences-de-la-Vie, Québec City, QC",
-        "lat": 46.7778727,
-        "lon": -71.2778118,
-        "color": "red",
-    },
-]
-
-RADII_KM = [50, 150]
 OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
-DB_PATH     = "/tmp/pharmacies.duckdb"
+DB_PATH = "/tmp/pharmacies.duckdb"
 PAYLOAD_PATH = "/tmp/osm_payload.json"
-CACHE_TTL_SECONDS = 86_400  # 24 hours
 
-# ---------------------------------------------------------------
-# DuckDB helpers
-# ---------------------------------------------------------------
 @st.cache_resource
 def get_db():
     con = duckdb.connect(DB_PATH)
     con.execute("INSTALL spatial; LOAD spatial;")
+    
     con.execute("""
-        CREATE TABLE IF NOT EXISTS pavilions (
-            name  VARCHAR PRIMARY KEY,
-            lat   DOUBLE,
-            lon   DOUBLE,
+        CREATE TABLE IF NOT EXISTS dim_pavilions (
+            id VARCHAR PRIMARY KEY,
+            name VARCHAR,
+            address VARCHAR,
+            lat DOUBLE,
+            lon DOUBLE,
             color VARCHAR
-        )
+        );
+        INSERT OR IGNORE INTO dim_pavilions VALUES
+        ('udem', 'Pavillon Jean-Coutu — Université de Montréal', '2940 Chemin de Polytechnique, Montréal, QC', 45.5003731, -73.6147689, 'blue'),
+        ('ulaval', 'Pavillon Ferdinand-Vandry — Université Laval', '1600 Avenue des Sciences-de-la-Vie, Québec City, QC', 46.7778727, -71.2778118, 'red');
     """)
-    con.executemany(
-        """INSERT INTO pavilions (name, lat, lon, color) VALUES (?, ?, ?, ?)
-           ON CONFLICT (name) DO UPDATE
-           SET lat = excluded.lat, lon = excluded.lon, color = excluded.color""",
-        [(loc["name"], loc["lat"], loc["lon"], loc["color"]) for loc in LOCATIONS],
-    )
     return con
 
-def _is_cache_fresh(con):
-    try:
-        row = con.execute("SELECT fetched_at FROM osm_cache_metadata").fetchone()
-    except duckdb.Error:
-        return False
-    if row is None:
-        return False
-    fetched_at = row[0]
-    if fetched_at.tzinfo is None:
-        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - fetched_at).total_seconds() < CACHE_TTL_SECONDS
-
-def _load_pharmacies(con, band_filter) -> pd.DataFrame:
-    view = (
-        "vw_50km"       if band_filter.startswith("50")
-        else "vw_150km"  if band_filter.startswith("150")
-        else "vw_all_quebec"
-    )
-    return con.execute(
-        f"SELECT name, lat, lon, address, operator, hours, "
-        f"nearest_pavilion, color, nearest_dist_km, all_dists "
-        f"FROM {view} ORDER BY nearest_dist_km"
-    ).df()
-
-# ---------------------------------------------------------------
-# ETL — Land → Bronze → Silver → Gold → Views
-# ---------------------------------------------------------------
-def _download_payload():
-    overpass_ql = (
-        "[out:json][timeout:180];"
-        'area["ISO3166-2"="CA-QC"]->.qc;'
-        '(nwr["amenity"="pharmacy"](area.qc););'
-        "out center tags;"
-    )
+def execute_pipeline(con):
+    overpass_ql = '[out:json][timeout:180];area["ISO3166-2"="CA-QC"]->.qc;(nwr["amenity"="pharmacy"](area.qc););out center tags;'
     url = OVERPASS_BASE + "?data=" + quote(overpass_ql)
     with urllib.request.urlopen(url, timeout=200) as resp:
         with open(PAYLOAD_PATH, "wb") as f:
             f.write(resp.read())
 
-def _etl_bronze(con):
     con.execute(f"""
-        CREATE OR REPLACE TABLE bronze_osm_elements AS
-        SELECT
-            element->>'type'       AS osm_type,
-            (element->>'id')::BIGINT AS osm_id,
-            element                AS raw
-        FROM (
-            SELECT UNNEST(elements) AS element
-            FROM read_json('{PAYLOAD_PATH}', columns={{'elements': 'JSON[]'}})
-        )
+        CREATE OR REPLACE TABLE bronze_osm AS
+        SELECT element 
+        FROM read_json('{PAYLOAD_PATH}', columns={{'elements': 'JSON[]'}}), UNNEST(elements) AS element
         WHERE element->>'type' IN ('node', 'way', 'relation')
     """)
 
-def _etl_silver(con):
     con.execute("""
         CREATE OR REPLACE TABLE silver_pharmacies AS
-        WITH staged AS (
-            SELECT DISTINCT ON (osm_type, osm_id)
-                osm_type,
-                osm_id,
-                COALESCE(
-                    NULLIF(json_extract_string(raw, '$.tags.name'), ''),
-                    'Pharmacy (unnamed)'
-                ) AS name,
-                COALESCE(
-                    TRY_CAST(json_extract_string(raw, '$.lat')        AS DOUBLE),
-                    TRY_CAST(json_extract_string(raw, '$.center.lat') AS DOUBLE)
-                ) AS lat,
-                COALESCE(
-                    TRY_CAST(json_extract_string(raw, '$.lon')        AS DOUBLE),
-                    TRY_CAST(json_extract_string(raw, '$.center.lon') AS DOUBLE)
-                ) AS lon,
-                CONCAT_WS(', ',
-                    NULLIF(TRIM(CONCAT_WS(' ',
-                        json_extract_string(raw, '$.tags[''addr:housenumber'']'),
-                        json_extract_string(raw, '$.tags[''addr:street'']')
-                    )), ''),
-                    json_extract_string(raw, '$.tags[''addr:city'']')
-                ) AS address,
-                COALESCE(json_extract_string(raw, '$.tags.operator'), '')      AS operator,
-                COALESCE(json_extract_string(raw, '$.tags.opening_hours'), '') AS hours
-            FROM bronze_osm_elements
-            ORDER BY osm_type, osm_id
-        )
-        SELECT * FROM staged
+        SELECT DISTINCT ON (element->>'type', element->>'id')
+            (element->>'id')::BIGINT AS osm_id,
+            COALESCE(NULLIF(element->>'$.tags.name', ''), 'Pharmacy (unnamed)') AS name,
+            COALESCE((element->>'$.lat')::DOUBLE, (element->>'$.center.lat')::DOUBLE) AS lat,
+            COALESCE((element->>'$.lon')::DOUBLE, (element->>'$.center.lon')::DOUBLE) AS lon,
+            CONCAT_WS(', ', 
+                NULLIF(TRIM(CONCAT_WS(' ', element->>'$.tags."addr:housenumber"', element->>'$.tags."addr:street"')), ''), 
+                element->>'$.tags."addr:city"'
+            ) AS address,
+            COALESCE(element->>'$.tags.operator', '') AS operator,
+            COALESCE(element->>'$.tags.opening_hours', '') AS hours,
+            ST_Point(
+                COALESCE((element->>'$.lon')::DOUBLE, (element->>'$.center.lon')::DOUBLE),
+                COALESCE((element->>'$.lat')::DOUBLE, (element->>'$.center.lat')::DOUBLE)
+            ) AS geom
+        FROM bronze_osm
         WHERE lat IS NOT NULL AND lon IS NOT NULL
     """)
 
-def _etl_gold(con):
     con.execute("""
         CREATE OR REPLACE TABLE gold_pharmacies AS
-        WITH all_dists AS (
+        WITH distances AS (
             SELECT
-                s.osm_type, s.osm_id,
-                s.name, s.lat, s.lon, s.address, s.operator, s.hours,
-                pav.name  AS pavilion_name,
-                pav.color AS color,
-                ST_Distance_Spheroid(
-                    ST_Point(s.lon, s.lat),
-                    ST_Point(pav.lon, pav.lat)
-                ) / 1000.0 AS dist_km
+                s.osm_id, s.name, s.lat, s.lon, s.address, s.operator, s.hours,
+                p.name AS pavilion_name, p.color AS pavilion_color,
+                ST_Distance_Spheroid(s.geom, ST_Point(p.lon, p.lat)) / 1000.0 AS dist_km
             FROM silver_pharmacies s
-            CROSS JOIN pavilions pav
+            CROSS JOIN dim_pavilions p
         ),
-        nearest AS (
-            SELECT DISTINCT ON (osm_type, osm_id)
-                osm_type, osm_id,
-                name, lat, lon, address, operator, hours,
-                pavilion_name AS nearest_pavilion,
-                color,
-                dist_km       AS nearest_dist_km
-            FROM all_dists
-            ORDER BY osm_type, osm_id, dist_km
+        ranked_distances AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY osm_id ORDER BY dist_km ASC) as rnk
+            FROM distances
         ),
-        dists_agg AS (
+        html_components AS (
             SELECT
-                osm_type, osm_id,
-                LIST({'pavilion': pavilion_name, 'dist_km': dist_km}
-                     ORDER BY dist_km) AS all_dists
-            FROM all_dists
-            GROUP BY osm_type, osm_id
+                r.osm_id, r.lat, r.lon, r.pavilion_color AS color, r.dist_km AS nearest_dist_km, r.name,
+                CONCAT('<b>', r.name, '</b>',
+                    CASE WHEN r.address != '' THEN CONCAT('<br>', r.address) ELSE '' END,
+                    CASE WHEN r.operator != '' THEN CONCAT('<br>', r.operator) ELSE '' END,
+                    CASE WHEN r.hours != '' THEN CONCAT('<br>', r.hours) ELSE '' END
+                ) AS html_details,
+                STRING_AGG(CONCAT('<br>', ROUND(d.dist_km, 1)::VARCHAR, ' km — ', SPLIT_PART(d.pavilion_name, '—', 1)), '' ORDER BY d.dist_km ASC) AS html_distances
+            FROM ranked_distances r
+            JOIN distances d ON r.osm_id = d.osm_id
+            WHERE r.rnk = 1
+            GROUP BY r.osm_id, r.lat, r.lon, r.pavilion_color, r.dist_km, r.name, r.address, r.operator, r.hours
         )
         SELECT
-            n.osm_type, n.osm_id,
-            n.name, n.lat, n.lon, n.address, n.operator, n.hours,
-            n.nearest_pavilion, n.color, n.nearest_dist_km,
-            d.all_dists
-        FROM nearest n
-        JOIN dists_agg d USING (osm_type, osm_id)
+            lat, lon, color, nearest_dist_km,
+            CONCAT(html_details, '<hr style="margin:4px 0">', html_distances) AS popup_html,
+            CONCAT(name, ' — ', ROUND(nearest_dist_km, 1)::VARCHAR, ' km') AS tooltip_text
+        FROM html_components
     """)
-    
-    con.execute("CREATE OR REPLACE VIEW vw_50km        AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 50")
-    con.execute("CREATE OR REPLACE VIEW vw_150km       AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 150")
-    con.execute("CREATE OR REPLACE VIEW vw_all_quebec  AS SELECT * FROM gold_pharmacies")
-
-def fetch_pharmacies(force_refresh=False):
-    con = get_db()
-    if not force_refresh and _is_cache_fresh(con):
-        return
-
-    _download_payload()
-    _etl_bronze(con)
-    _etl_silver(con)
-    _etl_gold(con)
-
-    count = con.execute("SELECT COUNT(*) FROM gold_pharmacies").fetchone()[0]
-    if count == 0:
-        raise ValueError("ETL produced 0 pharmacies — aborting.")
 
     con.execute("""
-        CREATE OR REPLACE TABLE osm_cache_metadata AS
-        SELECT now()::TIMESTAMPTZ AS fetched_at
+        CREATE OR REPLACE VIEW gold_ui_config AS
+        SELECT AVG(lat) AS center_lat, AVG(lon) AS center_lon FROM dim_pavilions
     """)
 
-# ---------------------------------------------------------------
-# Sidebar controls
-# ---------------------------------------------------------------
+con = get_db()
+
 with st.sidebar:
-    st.header("Pavilion coverage map")
-
-    show_50 = st.checkbox("Show 50 km circles", value=True)
-    show_150 = st.checkbox("Show 150 km circles", value=True)
-
+    if st.button("Run ETL Pipeline"):
+        execute_pipeline(con)
+    
     st.divider()
-    st.subheader("Pharmacies (OSM)")
-    show_pharmacies = st.checkbox("Show pharmacies", value=True)
-    band_filter = st.radio(
-        "Include pharmacies within",
-        ["50 km only", "150 km only", "All Quebec"],
-        index=2,
-        disabled=not show_pharmacies,
-    )
-    cluster = st.checkbox(
-        "Cluster markers", value=True, disabled=not show_pharmacies,
-        help="Uncheck to see every pin individually — slow above ~500 points.",
-    )
-    force_refresh = st.button(
-        "Refresh OSM data",
-        disabled=not show_pharmacies,
-        help="Re-fetch pharmacy data from OpenStreetMap (ignores the 24 h cache).",
-    )
+    band_filter = st.radio("Distance filter", ["50", "150", "All"], index=2)
+    cluster = st.checkbox("Cluster markers", value=True)
+    show_50 = st.checkbox("Show 50 km radii", value=True)
+    show_150 = st.checkbox("Show 150 km radii", value=True)
 
-    st.caption(
-        "Blue = Pavillon Jean-Coutu (UdeM, Montréal)\n\n"
-        "Red = Pavillon Ferdinand-Vandry (ULaval, Québec City)\n\n"
-        "Solid = 50 km · dashed = 150 km. True geodesic radii.\n\n"
-        "Pharmacy dots are colored by their nearest pavilion."
-    )
-
-# ---------------------------------------------------------------
-# Build the map (centered between the two campuses)
-# ---------------------------------------------------------------
-center_lat = sum(loc["lat"] for loc in LOCATIONS) / len(LOCATIONS)
-center_lon = sum(loc["lon"] for loc in LOCATIONS) / len(LOCATIONS)
+try:
+    ui_config = con.execute("SELECT center_lat, center_lon FROM gold_ui_config").fetchone()
+    center_lat, center_lon = ui_config[0], ui_config[1]
+except duckdb.CatalogException:
+    center_lat, center_lon = 46.0, -72.0 
 
 m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="OpenStreetMap")
 
-for loc in LOCATIONS:
+pavilions = con.execute("SELECT name, address, lat, lon, color FROM dim_pavilions").df()
+for row in pavilions.itertuples():
     folium.Marker(
-        location=[loc["lat"], loc["lon"]],
-        popup=folium.Popup(f"<b>{loc['name']}</b><br>{loc['address']}", max_width=280),
-        tooltip=loc["name"],
-        icon=folium.Icon(color=loc["color"], icon="graduation-cap", prefix="fa"),
+        location=[row.lat, row.lon],
+        popup=folium.Popup(f"<b>{row.name}</b><br>{row.address}", max_width=280),
+        tooltip=row.name,
+        icon=folium.Icon(color=row.color, icon="graduation-cap", prefix="fa")
     ).add_to(m)
 
-    for radius_km in RADII_KM:
-        if radius_km == 50 and not show_50:
-            continue
-        if radius_km == 150 and not show_150:
-            continue
-        folium.Circle(
-            location=[loc["lat"], loc["lon"]],
-            radius=radius_km * 1000,
-            color=loc["color"],
-            weight=2,
-            fill=True,
-            fill_opacity=0.08 if radius_km == 150 else 0.15,
-            dash_array="6" if radius_km == 150 else None,
-            tooltip=f"{radius_km} km around {loc['name']}",
-        ).add_to(m)
+    if show_50:
+        folium.Circle(location=[row.lat, row.lon], radius=50000, color=row.color, weight=2, fill=True, fill_opacity=0.15).add_to(m)
+    if show_150:
+        folium.Circle(location=[row.lat, row.lon], radius=150000, color=row.color, weight=2, fill=True, fill_opacity=0.08, dash_array="6").add_to(m)
 
-# ---------------------------------------------------------------
-# Pharmacies
-# ---------------------------------------------------------------
-if show_pharmacies:
-    with st.spinner("Loading pharmacy data…"):
-        try:
-            fetch_pharmacies(force_refresh=force_refresh)
-        except Exception as e:
-            st.sidebar.error(f"Pipeline failed: {e}")
-
-    try:
-        pharmacies = _load_pharmacies(get_db(), band_filter)
-    except Exception as e:
-        pharmacies = pd.DataFrame()
-        st.sidebar.error(f"Database query failed: {e}")
-
+try:
+    where_clause = ""
+    if band_filter == "50":
+        where_clause = "WHERE nearest_dist_km <= 50"
+    elif band_filter == "150":
+        where_clause = "WHERE nearest_dist_km <= 150"
+        
+    pharmacies = con.execute(f"SELECT lat, lon, color, popup_html, tooltip_text FROM gold_pharmacies {where_clause}").df()
+    
     layer = folium.FeatureGroup(name="Pharmacies").add_to(m)
     target = MarkerCluster().add_to(layer) if cluster else layer
 
-    def _add_marker(row):
-        detail = "".join(
-            f"<br>{lbl}" for lbl in (row.address, row.operator, row.hours) if lbl
-        )
-        dist_lines = "".join(
-            f"<br>{d['dist_km']:.1f} km — {d['pavilion'].split('—')[0].strip()}"
-            for d in row.all_dists
-        )
+    for row in pharmacies.itertuples():
         folium.CircleMarker(
             location=[row.lat, row.lon],
             radius=4,
@@ -350,15 +177,12 @@ if show_pharmacies:
             fill=True,
             fill_color=row.color,
             fill_opacity=0.75,
-            popup=folium.Popup(
-                f"<b>{row['name']}</b>{detail}<hr style='margin:4px 0'>{dist_lines}",
-                max_width=280,
-            ),
-            tooltip=f"{row['name']} — {row.nearest_dist_km:.1f} km",
+            popup=folium.Popup(row.popup_html, max_width=280),
+            tooltip=row.tooltip_text
         ).add_to(target)
-
-    pharmacies.apply(_add_marker, axis=1)
-
-    st.sidebar.metric("Pharmacies shown", len(pharmacies))
+        
+    st.sidebar.metric("Pharmacies", len(pharmacies))
+except duckdb.CatalogException:
+    st.sidebar.warning("Pipeline has not been executed.")
 
 st_folium(m, use_container_width=True, height=1200, returned_objects=[])
