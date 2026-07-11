@@ -69,14 +69,13 @@ RADII_KM = [50, 150]
 OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
 DB_PATH     = "/tmp/pharmacies.duckdb"
 PAYLOAD_PATH = "/tmp/osm_payload.json"
-CACHE_TTL_SECONDS = 86_400  
+CACHE_TTL_SECONDS = 86_400  # 24 hours
 
 # ---------------------------------------------------------------
 # DuckDB helpers
 # ---------------------------------------------------------------
 @st.cache_resource
 def get_db():
-    """Open the DuckDB file, seed the pavilions reference table, and load httpfs."""
     con = duckdb.connect(DB_PATH)
     con.execute("INSTALL spatial; LOAD spatial;")
     con.execute("""
@@ -95,11 +94,10 @@ def get_db():
     )
     return con
 
-
 def _is_cache_fresh(con):
     try:
-        row = con.execute("SELECT fetched_at FROM metadata").fetchone()
-    except duckdb.CatalogException:
+        row = con.execute("SELECT fetched_at FROM osm_cache_metadata").fetchone()
+    except duckdb.Error:
         return False
     if row is None:
         return False
@@ -108,9 +106,7 @@ def _is_cache_fresh(con):
         fetched_at = fetched_at.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - fetched_at).total_seconds() < CACHE_TTL_SECONDS
 
-
 def _load_pharmacies(con, band_filter) -> pd.DataFrame:
-    """Query the appropriate gold view for the selected distance band."""
     view = (
         "vw_50km"       if band_filter.startswith("50")
         else "vw_150km"  if band_filter.startswith("150")
@@ -122,12 +118,10 @@ def _load_pharmacies(con, band_filter) -> pd.DataFrame:
         f"FROM {view} ORDER BY nearest_dist_km"
     ).df()
 
-
 # ---------------------------------------------------------------
 # ETL — Land → Bronze → Silver → Gold → Views
 # ---------------------------------------------------------------
 def _download_payload():
-    """Fetch the Overpass JSON response and write it to disk."""
     overpass_ql = (
         "[out:json][timeout:180];"
         'area["ISO3166-2"="CA-QC"]->.qc;'
@@ -139,9 +133,7 @@ def _download_payload():
         with open(PAYLOAD_PATH, "wb") as f:
             f.write(resp.read())
 
-
 def _etl_bronze(con):
-    """Bronze: SELECT * from the raw JSON file on disk."""
     con.execute(f"""
         CREATE OR REPLACE TABLE bronze_osm_elements AS
         SELECT
@@ -155,9 +147,7 @@ def _etl_bronze(con):
         WHERE element->>'type' IN ('node', 'way', 'relation')
     """)
 
-
 def _etl_silver(con):
-    """Silver: parse and clean bronze into typed columns."""
     con.execute("""
         CREATE OR REPLACE TABLE silver_pharmacies AS
         WITH staged AS (
@@ -192,9 +182,7 @@ def _etl_silver(con):
         WHERE lat IS NOT NULL AND lon IS NOT NULL
     """)
 
-
 def _etl_gold(con):
-    """Gold: denormalized master table with pre-computed distances, then three views."""
     con.execute("""
         CREATE OR REPLACE TABLE gold_pharmacies AS
         WITH all_dists AS (
@@ -241,9 +229,7 @@ def _etl_gold(con):
     con.execute("CREATE OR REPLACE VIEW vw_150km       AS SELECT * FROM gold_pharmacies WHERE nearest_dist_km <= 150")
     con.execute("CREATE OR REPLACE VIEW vw_all_quebec  AS SELECT * FROM gold_pharmacies")
 
-
 def fetch_pharmacies(force_refresh=False):
-    """Run the full Land → Bronze → Silver → Gold pipeline if the cache is stale."""
     con = get_db()
     if not force_refresh and _is_cache_fresh(con):
         return
@@ -258,10 +244,9 @@ def fetch_pharmacies(force_refresh=False):
         raise ValueError("ETL produced 0 pharmacies — aborting.")
 
     con.execute("""
-        CREATE OR REPLACE TABLE metadata AS
+        CREATE OR REPLACE TABLE osm_cache_metadata AS
         SELECT now()::TIMESTAMPTZ AS fetched_at
     """)
-
 
 # ---------------------------------------------------------------
 # Sidebar controls
