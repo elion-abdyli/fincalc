@@ -43,19 +43,16 @@ WHERE lat IS NOT NULL AND lon IS NOT NULL;
 """
 
 
-def run_etl():
-    con = duckdb.connect(DB_PATH)
-    try:
-        con.execute(ETL_SQL)
-    finally:
-        con.close()
-
-
 @st.cache_data
 def load_points():
-    con = duckdb.connect(DB_PATH, read_only=True)
+    con = duckdb.connect(DB_PATH)
     try:
         con.execute("INSTALL spatial; LOAD spatial;")
+        exists = con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'silver_pharmacies'"
+        ).fetchone()[0]
+        if not exists:
+            con.execute(ETL_SQL)
         return con.execute("""
             SELECT
                 ST_Y(geom) AS lat,
@@ -73,30 +70,8 @@ def load_points():
         con.close()
 
 
-def table_exists():
-    con = duckdb.connect(DB_PATH, read_only=True)
-    try:
-        return bool(con.execute(
-            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'silver_pharmacies'"
-        ).fetchone()[0])
-    except duckdb.Error:
-        return False
-    finally:
-        con.close()
-
-
-with st.sidebar:
-    if st.button("Refresh data (run ETL)"):
-        with st.spinner("Fetching from Overpass…"):
-            run_etl()
-        load_points.clear()
-
-if not table_exists():
-    with st.spinner("First run: fetching data from Overpass…"):
-        run_etl()
-
-points = load_points()
-st.sidebar.metric("Pharmacies", len(points))
+with st.spinner("Loading data…"):
+    points = load_points()
 
 center_lat = sum(p[1] for p in PAVILIONS) / len(PAVILIONS)
 center_lon = sum(p[2] for p in PAVILIONS) / len(PAVILIONS)
