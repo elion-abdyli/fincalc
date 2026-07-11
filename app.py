@@ -3,15 +3,15 @@ Streamlit app: map of two university pavilions with 50 km / 150 km radius circle
 plus every OSM-tagged pharmacy in the province of Quebec.
 
 Run with:
-    pip install streamlit folium streamlit-folium requests duckdb
+    pip install streamlit folium streamlit-folium duckdb
     streamlit run app.py
 """
 
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import duckdb
 import folium
-import requests
 import streamlit as st
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
@@ -64,7 +64,7 @@ LOCATIONS = [
 ]
 
 RADII_KM = [50, 150]
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
 DB_PATH = "/tmp/pharmacies.duckdb"
 CACHE_TTL_SECONDS = 86_400  # 24 hours
 
@@ -76,15 +76,24 @@ def get_db():
     """Return a single shared DuckDB connection, creating the schema if needed."""
     con = duckdb.connect(DB_PATH)
     con.execute("""
-        CREATE TABLE IF NOT EXISTS pharmacies (
-            osm_type VARCHAR,
-            osm_id   BIGINT,
-            name     VARCHAR,
-            lat      DOUBLE,
-            lon      DOUBLE,
-            address  VARCHAR,
-            operator VARCHAR,
-            hours    VARCHAR,
+        CREATE TABLE IF NOT EXISTS bronze_osm_elements (
+            fetched_at TIMESTAMPTZ,
+            osm_type   VARCHAR,
+            osm_id     BIGINT,
+            raw        JSON
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS silver_pharmacies (
+            osm_type  VARCHAR,
+            osm_id    BIGINT,
+            name      VARCHAR,
+            lat       DOUBLE,
+            lon       DOUBLE,
+            address   VARCHAR,
+            operator  VARCHAR,
+            hours     VARCHAR,
+            loaded_at TIMESTAMPTZ,
             PRIMARY KEY (osm_type, osm_id)
         )
     """)
@@ -120,7 +129,7 @@ def get_db():
                 cos(radians(pav.lat)) * cos(radians(p.lat)) *
                 pow(sin(radians((p.lon - pav.lon) / 2.0)), 2)
             )) AS dist_km
-        FROM pharmacies p
+        FROM silver_pharmacies p
         CROSS JOIN pavilions pav
     """)
     con.execute("""
@@ -173,18 +182,93 @@ def _load_pharmacies(con, max_dist_km):
     return [dict(zip(keys, row)) for row in rows]
 
 
-def _save_pharmacies(con, records):
+# ---------------------------------------------------------------
+# ETL — Bronze → Silver → Gold
+# ---------------------------------------------------------------
+def _etl_bronze(con):
+    """Load raw OSM elements from Overpass into the bronze table via DuckDB httpfs."""
+    overpass_ql = (
+        "[out:json][timeout:180];"
+        'area["ISO3166-2"="CA-QC"]->.qc;'
+        '(nwr["amenity"="pharmacy"](area.qc););'
+        "out center tags;"
+    )
+    url = OVERPASS_BASE + "?data=" + quote(overpass_ql)
+
+    con.execute("DELETE FROM bronze_osm_elements")
+    con.execute("""
+        INSERT INTO bronze_osm_elements (fetched_at, osm_type, osm_id, raw)
+        SELECT
+            now()::TIMESTAMPTZ,
+            element->>'type',
+            (element->>'id')::BIGINT,
+            element
+        FROM (
+            SELECT UNNEST(elements) AS element
+            FROM read_json(?, columns={'elements': 'JSON[]'})
+        )
+        WHERE element->>'type' IN ('node', 'way', 'relation')
+    """, [url])
+
+
+def _etl_silver(con):
+    """Parse and clean bronze elements into the silver pharmacies table."""
+    con.execute("DELETE FROM silver_pharmacies")
+    con.execute("""
+        INSERT INTO silver_pharmacies
+        WITH staged AS (
+            SELECT DISTINCT ON (osm_type, osm_id)
+                osm_type,
+                osm_id,
+                COALESCE(
+                    NULLIF(json_extract_string(raw, '$.tags.name'), ''),
+                    'Pharmacy (unnamed)'
+                ) AS name,
+                COALESCE(
+                    TRY_CAST(json_extract_string(raw, '$.lat')        AS DOUBLE),
+                    TRY_CAST(json_extract_string(raw, '$.center.lat') AS DOUBLE)
+                ) AS lat,
+                COALESCE(
+                    TRY_CAST(json_extract_string(raw, '$.lon')        AS DOUBLE),
+                    TRY_CAST(json_extract_string(raw, '$.center.lon') AS DOUBLE)
+                ) AS lon,
+                CONCAT_WS(', ',
+                    NULLIF(TRIM(CONCAT_WS(' ',
+                        json_extract_string(raw, '$.tags[''addr:housenumber'']'),
+                        json_extract_string(raw, '$.tags[''addr:street'']')
+                    )), ''),
+                    json_extract_string(raw, '$.tags[''addr:city'']')
+                ) AS address,
+                COALESCE(json_extract_string(raw, '$.tags.operator'), '')      AS operator,
+                COALESCE(json_extract_string(raw, '$.tags.opening_hours'), '') AS hours,
+                now()::TIMESTAMPTZ AS loaded_at
+            FROM bronze_osm_elements
+            ORDER BY osm_type, osm_id, fetched_at DESC
+        )
+        SELECT osm_type, osm_id, name, lat, lon, address, operator, hours, loaded_at
+        FROM staged
+        WHERE lat IS NOT NULL AND lon IS NOT NULL
+    """)
+
+
+def fetch_pharmacies(force_refresh=False):
+    """Orchestrate the full Bronze → Silver ETL inside a single transaction."""
+    con = get_db()
+    if not force_refresh and _is_cache_fresh(con):
+        return
+
+    con.execute("LOAD httpfs")
+    con.execute("SET http_timeout = 200000")  # ms
+
     con.execute("BEGIN")
     try:
-        con.execute("DELETE FROM pharmacies")
-        con.executemany(
-            "INSERT INTO pharmacies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (r["osm_type"], r["osm_id"], r["name"], r["lat"],
-                 r["lon"], r["address"], r["operator"], r["hours"])
-                for r in records
-            ],
-        )
+        _etl_bronze(con)
+        _etl_silver(con)
+
+        count = con.execute("SELECT COUNT(*) FROM silver_pharmacies").fetchone()[0]
+        if count == 0:
+            raise ValueError("ETL produced 0 pharmacies — aborting to preserve existing data.")
+
         con.execute(
             """INSERT INTO metadata (key, value) VALUES ('fetched_at', ?)
                ON CONFLICT (key) DO UPDATE SET value = excluded.value""",
@@ -194,50 +278,6 @@ def _save_pharmacies(con, records):
     except Exception:
         con.execute("ROLLBACK")
         raise
-
-
-def fetch_pharmacies(force_refresh=False):
-    """Ensure the DuckDB pharmacy cache is fresh, fetching from Overpass if needed."""
-    con = get_db()
-    if not force_refresh and _is_cache_fresh(con):
-        return
-
-    query = (
-        "[out:json][timeout:180];"
-        'area["ISO3166-2"="CA-QC"]->.qc;'
-        '(nwr["amenity"="pharmacy"](area.qc););'
-        "out center tags;"
-    )
-    headers = {"User-Agent": "fincalc/0.1 (educational project)"}
-    r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=200)
-    r.raise_for_status()
-
-    seen, records = set(), []
-    for el in r.json().get("elements", []):
-        lat = el.get("lat") or el.get("center", {}).get("lat")
-        lon = el.get("lon") or el.get("center", {}).get("lon")
-        if lat is None or lon is None:
-            continue
-        key = (el["type"], el["id"])
-        if key in seen:
-            continue
-        seen.add(key)
-        tags = el.get("tags", {})
-        street = " ".join(
-            p for p in (tags.get("addr:housenumber"), tags.get("addr:street")) if p
-        )
-        records.append({
-            "osm_type": el["type"],
-            "osm_id":   el["id"],
-            "name":     tags.get("name", "Pharmacy (unnamed)"),
-            "lat":      lat,
-            "lon":      lon,
-            "address":  ", ".join(p for p in (street, tags.get("addr:city")) if p),
-            "operator": tags.get("operator", ""),
-            "hours":    tags.get("opening_hours", ""),
-        })
-
-    _save_pharmacies(con, records)
 
 
 # ---------------------------------------------------------------
