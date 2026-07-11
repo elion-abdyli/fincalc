@@ -189,16 +189,15 @@ def fetch_pharmacies(force_refresh=False):
 
 
 def classify(pharm, locations):
-    """Nearest pavilion + which radius band the pharmacy falls in."""
+    """Nearest pavilion and its distance, colored by that pavilion."""
     dists = {
         loc["name"]: haversine_km(pharm["lat"], pharm["lon"], loc["lat"], loc["lon"])
         for loc in locations
     }
     nearest = min(dists, key=dists.get)
     d = dists[nearest]
-    band = 50 if d <= 50 else (150 if d <= 150 else None)
     color = next(l["color"] for l in locations if l["name"] == nearest)
-    return nearest, d, band, color, dists
+    return nearest, d, color, dists
 
 
 # ---------------------------------------------------------------
@@ -215,8 +214,8 @@ with st.sidebar:
     show_pharmacies = st.checkbox("Show pharmacies", value=True)
     band_filter = st.radio(
         "Include pharmacies within",
-        ["50 km only", "150 km (all)"],
-        index=1,
+        ["50 km only", "150 km only", "All Quebec"],
+        index=2,
         disabled=not show_pharmacies,
     )
     cluster = st.checkbox(
@@ -279,17 +278,17 @@ if show_pharmacies:
             pharmacies = []
             st.sidebar.error(f"Overpass query failed: {e}")
 
-    max_band = 50 if band_filter.startswith("50") else 150
+    max_dist = 50.0 if band_filter.startswith("50") else (150.0 if band_filter.startswith("150") else float("inf"))
 
     layer = folium.FeatureGroup(name="Pharmacies").add_to(m)
     target = MarkerCluster().add_to(layer) if cluster else layer
 
-    counts = {"50": 0, "150": 0}
+    shown = 0
     for p in pharmacies:
-        nearest, dist, band, color, dists = classify(p, LOCATIONS)
-        if band is None or band > max_band:
+        nearest, dist, color, dists = classify(p, LOCATIONS)
+        if dist > max_dist:
             continue
-        counts["50" if band == 50 else "150"] += 1
+        shown += 1
 
         detail = "".join(
             f"<br>{lbl}" for lbl in (p["address"], p["operator"], p["hours"]) if lbl
@@ -305,7 +304,7 @@ if show_pharmacies:
             weight=1,
             fill=True,
             fill_color=color,
-            fill_opacity=0.9 if band == 50 else 0.45,
+            fill_opacity=0.75,
             popup=folium.Popup(
                 f"<b>{p['name']}</b>{detail}<hr style='margin:4px 0'>{dist_lines}",
                 max_width=280,
@@ -313,10 +312,6 @@ if show_pharmacies:
             tooltip=f"{p['name']} — {dist:.1f} km",
         ).add_to(target)
 
-    st.sidebar.metric(
-        "Pharmacies shown",
-        counts["50"] + counts["150"],
-        f"{counts['50']} within 50 km",
-    )
+    st.sidebar.metric("Pharmacies shown", shown)
 
 st_folium(m, use_container_width=True, height=1200, returned_objects=[])
